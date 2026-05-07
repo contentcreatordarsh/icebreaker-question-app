@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'darshan.p.hegde@gmail.com' && 
+        request.auth.token.email_verified == true
+      );
+    }
+
+    // --- Validation Helpers ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'isPremium', 'subscriptionStatus', 'lifetimePurchase', 'createdAt']) &&
+             data.keys().size() == 6 &&
+             data.uid is string && data.uid.size() <= 128 &&
+             data.email is string && data.email.size() <= 256 &&
+             data.isPremium is bool &&
+             data.subscriptionStatus in ['none', 'active', 'canceled'] &&
+             data.lifetimePurchase is bool &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidQuestion(data) {
+      return data.keys().hasAll(['text', 'category']) &&
+             data.text is string && data.text.size() <= 1000 &&
+             data.category is string && data.category.size() <= 100;
+    }
+
+    // --- Collections ---
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUserProfile(incoming()) && incoming().isPremium == false;
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUserProfile(incoming()) && (
+        isAdmin() || (
+          // Users can't self-promote to premium via client side
+          incoming().uid == existing().uid &&
+          incoming().isPremium == existing().isPremium &&
+          incoming().subscriptionStatus == existing().subscriptionStatus &&
+          incoming().lifetimePurchase == existing().lifetimePurchase &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email'])
+        )
+      );
+
+      match /favorites/{questionId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /history/{questionId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    match /questions/{questionId} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidQuestion(incoming());
+    }
+
+    match /daily_questions/{date} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "entities": {
+    "Question": {
+      "title": "Question",
+      "description": "A conversation starter question.",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "The question text." },
+        "category": { "type": "string", "description": "Category (e.g., Family, Couple, Team)." },
+        "difficulty": { "type": "string", "description": "Depth level (Light, Deep, Random)." }
+      },
+      "required": ["text", "category"]
+    },
+    "DailyQuestion": {
+      "title": "Daily Question",
+      "description": "The rotating question for a specific day.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date", "description": "YYYY-MM-DD" },
+        "questionId": { "type": "string" },
+        "text": { "type": "string" },
+        "category": { "type": "string" }
+      },
+      "required": ["date", "text"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User account information and subscription status.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "isPremium": { "type": "boolean" },
+        "subscriptionStatus": { "type": "string", "enum": ["none", "active", "canceled"] },
+        "lifetimePurchase": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "isPremium"]
+    }
+  },
+  "firestore": {
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Pool of all questions."
+    },
+    "/daily_questions/{date}": {
+      "schema": "DailyQuestion",
+      "description": "The question assigned to a specific date."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles and subscription info."
+    },
+    "/users/{userId}/favorites/{questionId}": {
+      "schema": "Question",
+      "description": "Questions favorited by the user."
+    },
+    "/users/{userId}/history/{questionId}": {
+      "schema": "DailyQuestion",
+      "description": "History of questions seen/discussed by the user."
+    }
+  }
+}
