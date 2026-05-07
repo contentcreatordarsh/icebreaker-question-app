@@ -13,8 +13,10 @@ import QuestionDisplay from './components/QuestionDisplay';
 import Pricing from './components/Pricing';
 import SearchOverlay from './components/SearchOverlay';
 import AboutOverlay from './components/AboutOverlay';
+import UsageDashboard from './components/UsageDashboard';
 import UserCollections from './components/UserCollections';
 import { Category, Difficulty, UserProfile } from './types';
+import { PLANS } from './constants';
 import { cn } from './lib/utils';
 
 export default function App() {
@@ -26,6 +28,7 @@ export default function App() {
   const [showCollections, setShowCollections] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [showUsageDashboard, setShowUsageDashboard] = useState(false);
 
   useEffect(() => {
     async function syncProfile() {
@@ -44,8 +47,10 @@ export default function App() {
           uid: user.uid,
           email: user.email || '',
           isPremium: false,
+          subscriptionPlan: 'free',
           subscriptionStatus: 'none',
           lifetimePurchase: false,
+          usageCount: 0,
           createdAt: serverTimestamp(),
         };
         await setDoc(docRef, newProfile);
@@ -112,7 +117,10 @@ export default function App() {
             </button>
             {user ? (
               <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setShowUsageDashboard(true)}
+                  className="flex items-center gap-2 group text-left"
+                >
                   {user.photoURL && (
                     <img 
                       src={user.photoURL} 
@@ -121,12 +129,17 @@ export default function App() {
                       referrerPolicy="no-referrer"
                     />
                   )}
-                  {user.displayName && (
-                    <span className="caps-tracking text-[10px] opacity-40 hidden sm:inline">
-                      {user.displayName.split(' ')[0]}
+                  <div className="flex flex-col items-start leading-none">
+                    {user.displayName && (
+                      <span className="caps-tracking text-[10px] opacity-40">
+                        {user.displayName.split(' ')[0]}
+                      </span>
+                    )}
+                    <span className="text-[8px] caps-tracking opacity-20 group-hover:opacity-60 transition-opacity">
+                      {userProfile?.usageCount || 0} / {PLANS[userProfile?.subscriptionPlan || 'free'].limit === 1000000 ? '∞' : PLANS[userProfile?.subscriptionPlan || 'free'].limit}
                     </span>
-                  )}
-                </div>
+                  </div>
+                </button>
                 <button 
                   onClick={() => auth.signOut()}
                   className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-2"
@@ -197,6 +210,8 @@ export default function App() {
           <QuestionDisplay 
             category={category} 
             difficulty={difficulty}
+            userProfile={userProfile}
+            onUpgrade={() => setShowPricing(true)}
             isPremium={userProfile?.isPremium || false} 
           />
         </div>
@@ -267,6 +282,16 @@ export default function App() {
         )}
         {showAbout && (
           <AboutOverlay onClose={() => setShowAbout(false)} />
+        )}
+        {showUsageDashboard && userProfile && (
+          <UsageDashboard 
+            userProfile={userProfile} 
+            onClose={() => setShowUsageDashboard(false)} 
+            onUpgrade={() => {
+              setShowUsageDashboard(false);
+              setShowPricing(true);
+            }}
+          />
         )}
       </AnimatePresence>
     </div>

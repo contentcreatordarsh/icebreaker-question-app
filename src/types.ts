@@ -1,5 +1,6 @@
 export type Difficulty = 'Light' | 'Deep' | 'Random';
 export type Category = 'Icebreaker' | 'Deep Talk' | 'Funny' | 'Team Building';
+export type SubscriptionPlan = 'free' | 'monthly' | 'yearly' | 'lifetime';
 
 export interface Question {
   id: string;
@@ -21,8 +22,10 @@ export interface UserProfile {
   uid: string;
   email: string;
   isPremium: boolean;
+  subscriptionPlan: SubscriptionPlan;
   subscriptionStatus: 'none' | 'active' | 'canceled';
   lifetimePurchase: boolean;
+  usageCount: number;
   createdAt: any;
 }
 

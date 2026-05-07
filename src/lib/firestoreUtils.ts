@@ -1,5 +1,6 @@
-import { auth } from './firebase';
+import { auth, db } from './firebase';
 import { OperationType, FirestoreErrorInfo } from '../types';
+import { doc, updateDoc, increment } from 'firebase/firestore';
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {
@@ -20,4 +21,15 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+}
+
+export async function incrementUsage(userId: string) {
+  const userRef = doc(db, 'users', userId);
+  try {
+    await updateDoc(userRef, {
+      usageCount: increment(1)
+    });
+  } catch (error) {
+    console.warn("Could not increment usage:", error);
+  }
 }

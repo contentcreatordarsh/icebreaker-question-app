@@ -1,21 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sparkles, Share2, Heart, CheckCircle2, Twitter, Facebook, Linkedin, Instagram, Music, Copy, Check } from 'lucide-react';
+import { Sparkles, Share2, Heart, CheckCircle2, Twitter, Facebook, Linkedin, Instagram, Music, Copy, Check, Zap } from 'lucide-react';
 import { db, auth } from '../lib/firebase';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { generateDailyQuestion, generateQuestionImage } from '../services/geminiService';
-import { Category, DailyQuestion, OperationType, Difficulty } from '../types';
+import { Category, DailyQuestion, OperationType, Difficulty, UserProfile } from '../types';
+import { PLANS } from '../constants';
 import { cn } from '../lib/utils';
-import { handleFirestoreError } from '../lib/firestoreUtils';
+import { handleFirestoreError, incrementUsage } from '../lib/firestoreUtils';
 import { Download, Layout as LayoutIcon, Eye } from 'lucide-react';
 
 interface QuestionDisplayProps {
   isPremium: boolean;
   category: Category;
   difficulty: Difficulty;
+  userProfile: UserProfile | null;
+  onUpgrade: () => void;
 }
 
-export default function QuestionDisplay({ isPremium, category, difficulty }: QuestionDisplayProps) {
+export default function QuestionDisplay({ isPremium, category, difficulty, userProfile, onUpgrade }: QuestionDisplayProps) {
   const [dailyQuestion, setDailyQuestion] = useState<DailyQuestion | null>(null);
   const [loading, setLoading] = useState(true);
   const [isFavorited, setIsFavorited] = useState(false);
@@ -27,6 +30,14 @@ export default function QuestionDisplay({ isPremium, category, difficulty }: Que
 
   useEffect(() => {
     async function fetchDailyQuestion() {
+      if (userProfile) {
+        const plan = PLANS[userProfile.subscriptionPlan || 'free'];
+        if (userProfile.usageCount >= plan.limit) {
+          setLoading(false);
+          return;
+        }
+      }
+
       setLoading(true);
       setImageUrl(null);
       const today = new Date().toISOString().split('T')[0];
@@ -59,6 +70,8 @@ export default function QuestionDisplay({ isPremium, category, difficulty }: Que
         
         // Check if favorited and discussed for current user
         if (auth.currentUser) {
+          incrementUsage(auth.currentUser.uid);
+          
           const favRef = doc(db, 'users', auth.currentUser.uid, 'favorites', qData.questionId);
           const histRef = doc(db, 'users', auth.currentUser.uid, 'history', qData.questionId);
           
@@ -83,7 +96,7 @@ export default function QuestionDisplay({ isPremium, category, difficulty }: Que
     }
 
     fetchDailyQuestion();
-  }, [category, difficulty]);
+  }, [category, difficulty, userProfile?.usageCount]);
 
   const handleShare = () => {
     if (dailyQuestion) {
@@ -160,6 +173,30 @@ export default function QuestionDisplay({ isPremium, category, difficulty }: Que
       handleFirestoreError(error, OperationType.WRITE, `users/${auth.currentUser.uid}/history/${dailyQuestion.questionId}`);
     }
   };
+
+  if (userProfile && userProfile.usageCount >= PLANS[userProfile.subscriptionPlan || 'free'].limit) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 min-h-[400px] text-center">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md"
+        >
+          <Zap className="mx-auto mb-6 text-accent" size={32} />
+          <h2 className="font-serif text-3xl text-brand mb-4">Architecture Capacity Reached</h2>
+          <p className="font-serif italic text-brand/60 mb-8">
+            Your current plan's provocations have been exhausted. To continue the shared depth, consider a lifetime archival seat.
+          </p>
+          <button 
+            onClick={onUpgrade}
+            className="caps-tracking bg-brand text-white px-8 py-4 hover:bg-opacity-90 transition-all"
+          >
+            Expand Bandwidth
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
