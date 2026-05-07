@@ -13,6 +13,8 @@ export interface DailyQuestion {
   questionId: string;
   text: string;
   category: Category;
+  imageUrl?: string;
+  imagePrompt?: string;
 }
 
 export interface UserProfile {

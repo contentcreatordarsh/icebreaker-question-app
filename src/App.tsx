@@ -12,17 +12,20 @@ import { motion, AnimatePresence } from 'motion/react';
 import QuestionDisplay from './components/QuestionDisplay';
 import Pricing from './components/Pricing';
 import SearchOverlay from './components/SearchOverlay';
+import AboutOverlay from './components/AboutOverlay';
 import UserCollections from './components/UserCollections';
-import { Category, UserProfile } from './types';
+import { Category, Difficulty, UserProfile } from './types';
 import { cn } from './lib/utils';
 
 export default function App() {
   const [user, loadingAuth] = useAuthState(auth);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [category, setCategory] = useState<Category>('Icebreaker');
+  const [difficulty, setDifficulty] = useState<Difficulty>('Random');
   const [showPricing, setShowPricing] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
 
   useEffect(() => {
     async function syncProfile() {
@@ -96,18 +99,41 @@ export default function App() {
           </span>
           <div className="flex items-center gap-4 mt-2">
             <button 
+              onClick={() => setShowAbout(true)}
+              className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-2 mr-4"
+            >
+              About
+            </button>
+            <button 
               onClick={() => setShowSearch(true)}
               className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-2 mr-4"
             >
               Search
             </button>
             {user ? (
-              <button 
-                onClick={() => auth.signOut()}
-                className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-2"
-              >
-                <LogOut size={12} /> Sign Out
-              </button>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  {user.photoURL && (
+                    <img 
+                      src={user.photoURL} 
+                      alt={user.displayName || 'User'} 
+                      className="w-6 h-6 rounded-full border border-brand/20 shadow-sm"
+                      referrerPolicy="no-referrer"
+                    />
+                  )}
+                  {user.displayName && (
+                    <span className="caps-tracking text-[10px] opacity-40 hidden sm:inline">
+                      {user.displayName.split(' ')[0]}
+                    </span>
+                  )}
+                </div>
+                <button 
+                  onClick={() => auth.signOut()}
+                  className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-2"
+                >
+                  <LogOut size={12} /> Sign Out
+                </button>
+              </div>
             ) : (
               <button 
                 onClick={signInWithGoogle}
@@ -145,10 +171,32 @@ export default function App() {
           })}
         </div>
 
+        {/* Difficulty Selector */}
+        <div className="flex justify-center gap-4 mb-12">
+          {(['Light', 'Deep', 'Random'] as Difficulty[]).map((dif) => {
+            const isActive = difficulty === dif;
+            return (
+              <button
+                key={dif}
+                onClick={() => setDifficulty(dif)}
+                className={cn(
+                  "px-4 py-1.5 text-[10px] caps-tracking border transition-all",
+                  isActive 
+                    ? "bg-brand text-white border-brand" 
+                    : "border-brand/10 opacity-40 hover:opacity-100"
+                )}
+              >
+                {dif}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Question Area */}
         <div className="flex-grow flex flex-col justify-center px-8">
           <QuestionDisplay 
             category={category} 
+            difficulty={difficulty}
             isPremium={userProfile?.isPremium || false} 
           />
         </div>
@@ -216,6 +264,9 @@ export default function App() {
         )}
         {showSearch && (
           <SearchOverlay onClose={() => setShowSearch(false)} />
+        )}
+        {showAbout && (
+          <AboutOverlay onClose={() => setShowAbout(false)} />
         )}
       </AnimatePresence>
     </div>
