@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer, enableNetwork } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -8,7 +8,19 @@ export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
-export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
+/**
+ * Sign in with Google using a full-page redirect instead of a popup.
+ * Popup-based sign-in is blocked by default on new domains / mobile browsers.
+ * signInWithRedirect has no such restriction and works reliably everywhere.
+ */
+export const signInWithGoogle = () => signInWithRedirect(auth, googleProvider);
+
+/**
+ * Call once on app mount to finalise a pending Google redirect sign-in.
+ * Firebase stores the result in IndexedDB; this retrieves and clears it.
+ * Errors (e.g. user cancelled, account disabled) are surfaced as thrown exceptions.
+ */
+export { getRedirectResult };
 
 /**
  * fetch() wrapper that attaches the current user's Firebase ID token as a
