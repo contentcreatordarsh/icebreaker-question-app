@@ -218,6 +218,24 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   if (url.pathname === '/api/health') {
     return Response.json({ status: 'ok' });
   }
+
+  // ── Firebase auth handler proxy ───────────────────────────────────────────
+  // Firebase's signInWithRedirect uses [authDomain]/__/auth/ as the OAuth
+  // callback route. Since authDomain is now dinnertablecards.xyz, we proxy
+  // these requests transparently to Firebase's real auth infrastructure so
+  // the Google sign-in screen shows "dinnertablecards.xyz" instead of the
+  // raw Firebase project ID.
+  if (url.pathname.startsWith('/__/auth/')) {
+    const firebaseAuthUrl =
+      `https://gen-lang-client-0170753836.firebaseapp.com${url.pathname}${url.search}`;
+    const proxyReq = new Request(firebaseAuthUrl, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      redirect: 'manual', // let the browser follow redirects so OAuth flow works
+    });
+    return fetch(proxyReq);
+  }
   if (url.pathname === '/api/create-checkout-session' && request.method === 'POST') {
     return handleCheckout(request, env);
   }
