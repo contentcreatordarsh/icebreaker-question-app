@@ -1,0 +1,16 @@
+# Cloudflare Workers secrets for local dev with `wrangler dev`.
+# Copy this to .dev.vars and fill in your values — never commit .dev.vars.
+# For production, set secrets via: wrangler secret put STRIPE_SECRET_KEY
+
+STRIPE_SECRET_KEY=sk_test_...
+
+# ---------------------------------------------------------------------------
+# Build-time VITE_ variables — set in .env locally or Cloudflare build settings
+# ---------------------------------------------------------------------------
+VITE_STRIPE_PUBLISHABLE_KEY=pk_test_...
+VITE_STRIPE_MONTHLY_PRICE_ID=price_...
+VITE_STRIPE_YEARLY_PRICE_ID=price_...
+VITE_STRIPE_LIFETIME_PRICE_ID=price_...
+
+# No GEMINI_API_KEY needed — questions come from the static bank (src/data/questions.ts)
+# and the "Surprise Me" feature uses Cloudflare Workers AI (free, no key required).

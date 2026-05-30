@@ -10,13 +10,13 @@ export interface PlanDetails {
 }
 
 export const PLANS: Record<SubscriptionPlan, PlanDetails> = {
-  free: { 
+  free: {
     id: 'free',
-    name: 'Free', 
-    limit: 10, 
-    price: '$0', 
+    name: 'Free',
+    limit: 25,
+    price: '$0',
     billing: 'forever',
-    features: ['Basic categories', 'Daily questions', '10 generations total']
+    features: ['Basic categories', 'Daily questions', '25 questions to start']
   },
   monthly: { 
     id: 'monthly',
@@ -26,20 +26,12 @@ export const PLANS: Record<SubscriptionPlan, PlanDetails> = {
     billing: 'per month',
     features: ['All categories', 'High-res exports', '100 generations month']
   },
-  yearly: { 
+  yearly: {
     id: 'yearly',
-    name: 'Yearly', 
-    limit: 500, 
-    price: '$2', 
+    name: 'Yearly',
+    limit: 500,
+    price: '$2',
     billing: 'per month ($24/yr)',
-    features: ['Priority support', 'Early access', '500 generations/month']
-  },
-  lifetime: { 
-    id: 'lifetime',
-    name: 'Lifetime', 
-    limit: 1000000, 
-    price: '$29', 
-    billing: 'once',
-    features: ['Forever access', 'PDF archives', 'Unlimited* generations']
+    features: ['Priority support', 'Early access', '500 questions/month']
   }
 };

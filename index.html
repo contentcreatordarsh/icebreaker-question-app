@@ -3,11 +3,62 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
+
+    <!-- Primary -->
+    <title>Dinner Table Cards — Conversation Starters for Meaningful Moments</title>
+    <meta name="description" content="Beautiful icebreaker and deep-talk question cards for dinner parties, team meetings, and meaningful conversations. Over 300 curated questions." />
+    <meta name="theme-color" content="#5A5A40" />
+
+    <!-- Favicon & PWA -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="DT Cards" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+
+    <!-- Open Graph / Social sharing -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://dinnertablecards.xyz/" />
+    <meta property="og:title" content="Dinner Table Cards — Conversation Starters" />
+    <meta property="og:description" content="Over 300 curated icebreaker and deep-talk questions for dinner parties, team meetings, and meaningful conversations." />
+    <meta property="og:image" content="https://dinnertablecards.xyz/og-image.svg" />
+
+    <!-- Twitter card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Dinner Table Cards — Conversation Starters" />
+    <meta name="twitter:description" content="Beautiful question cards for meaningful conversations. Icebreakers, deep talk, team building — curated &amp; ready." />
+    <meta name="twitter:image" content="https://dinnertablecards.xyz/og-image.svg" />
+
+    <!-- JSON-LD structured data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "Dinner Table Cards",
+      "description": "Curated conversation starter cards for dinner parties, team meetings, and meaningful dialogue.",
+      "url": "https://icebreaker-question-app.falling-hall-ac41.workers.dev/",
+      "applicationCategory": "LifestyleApplication",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      }
+    }
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!--
+      Cloudflare Web Analytics (privacy-first, cookieless — no cookie banner needed).
+      Enable Web Analytics for this site in the Cloudflare dashboard, then replace
+      YOUR_CF_BEACON_TOKEN below with the generated token and uncomment the script.
+    -->
+    <!--
+    <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
+            data-cf-beacon='{"token": "YOUR_CF_BEACON_TOKEN"}'></script>
+    -->
   </body>
 </html>
-

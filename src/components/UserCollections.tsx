@@ -1,19 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { db, auth } from '../lib/firebase';
 import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
-import { Question, DailyQuestion } from '../types';
-import { X, Heart, History as HistoryIcon, Bookmark } from 'lucide-react';
+import { DailyQuestion } from '../types';
+import { X, Bookmark, History as HistoryIcon, Copy, Check, ArrowRight } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface UserCollectionsProps {
   onClose: () => void;
+  onSelectQuestion: (q: DailyQuestion) => void;
 }
 
-export default function UserCollections({ onClose }: UserCollectionsProps) {
+export default function UserCollections({ onClose, onSelectQuestion }: UserCollectionsProps) {
   const [activeTab, setActiveTab] = useState<'favorites' | 'history'>('favorites');
   const [questions, setQuestions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   useEffect(() => {
     async function fetchData() {
@@ -22,27 +24,40 @@ export default function UserCollections({ onClose }: UserCollectionsProps) {
       setQuestions([]);
 
       const path = `users/${auth.currentUser.uid}/${activeTab}`;
-      const q = query(collection(db, path), orderBy(activeTab === 'favorites' ? 'savedAt' : 'discussedAt', 'desc'), limit(50));
-      
+      const orderField = activeTab === 'favorites' ? 'savedAt' : 'discussedAt';
+      const q = query(collection(db, path), orderBy(orderField, 'desc'), limit(50));
+
       try {
-        const querySnapshot = await getDocs(q);
-        const fetched = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setQuestions(fetched);
+        const snap = await getDocs(q);
+        setQuestions(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       } catch (error) {
         console.error(`Error fetching ${activeTab}:`, error);
       } finally {
         setLoading(false);
       }
     }
-
     fetchData();
   }, [activeTab]);
 
+  const handleCopy = (q: any) => {
+    navigator.clipboard.writeText(q.text);
+    setCopiedId(q.id);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
+
+  const handleDisplay = (q: any) => {
+    const question: DailyQuestion = {
+      questionId: q.id,
+      text: q.text,
+      category: q.category,
+      date: q.date || new Date().toISOString().split('T')[0],
+    };
+    onSelectQuestion(question);
+    onClose();
+  };
+
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -52,22 +67,22 @@ export default function UserCollections({ onClose }: UserCollectionsProps) {
         {/* Header */}
         <div className="p-8 border-b border-brand/10 flex justify-between items-center">
           <div className="flex gap-8">
-            <button 
+            <button
               onClick={() => setActiveTab('favorites')}
               className={cn(
-                "caps-tracking pb-2 border-b-2 transition-all",
-                activeTab === 'favorites' ? "border-brand opacity-100" : "border-transparent opacity-40"
+                'caps-tracking pb-2 border-b-2 transition-all',
+                activeTab === 'favorites' ? 'border-brand opacity-100' : 'border-transparent opacity-40',
               )}
             >
               <div className="flex items-center gap-2">
                 <Bookmark size={12} /> Favorites
               </div>
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('history')}
               className={cn(
-                "caps-tracking pb-2 border-b-2 transition-all",
-                activeTab === 'history' ? "border-brand opacity-100" : "border-transparent opacity-40"
+                'caps-tracking pb-2 border-b-2 transition-all',
+                activeTab === 'history' ? 'border-brand opacity-100' : 'border-transparent opacity-40',
               )}
             >
               <div className="flex items-center gap-2">
@@ -84,29 +99,49 @@ export default function UserCollections({ onClose }: UserCollectionsProps) {
         <div className="flex-grow overflow-y-auto p-8 space-y-8 no-scrollbar">
           {loading ? (
             <div className="flex flex-col items-center justify-center h-full opacity-40 italic font-serif">
-              Reading the archives...
+              Reading the archives…
             </div>
           ) : questions.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               {questions.map((q, idx) => (
-                <div key={q.id} className="border-b border-brand/5 pb-8 group">
+                <div key={q.id} className="group border-b border-brand/5 pb-8">
                   <span className="text-[9px] caps-tracking opacity-30 block mb-2">
-                    {idx + 1 < 10 ? `0${idx + 1}` : idx + 1} / {q.category}
+                    {String(idx + 1).padStart(2, '0')} / {q.category}
                   </span>
-                  <p className="font-serif text-xl md:text-2xl italic leading-relaxed group-hover:text-accent transition-colors">
+
+                  <p className="font-serif text-xl md:text-2xl italic leading-relaxed group-hover:text-accent transition-colors mb-4">
                     "{q.text}"
                   </p>
-                  <div className="mt-4 flex justify-between items-center whitespace-nowrap">
+
+                  <div className="flex items-center justify-between">
                     <span className="text-[10px] opacity-40 italic">
-                      {q.savedAt || q.discussedAt ? new Date(q.savedAt?.toDate() || q.discussedAt?.toDate()).toLocaleDateString() : 'Long ago'}
+                      {(q.savedAt || q.discussedAt)
+                        ? new Date((q.savedAt ?? q.discussedAt).toDate()).toLocaleDateString()
+                        : '—'}
                     </span>
+
+                    {/* Action buttons — visible on hover */}
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => handleCopy(q)}
+                        className="caps-tracking text-[9px] border border-brand/10 px-3 py-1.5 hover:bg-brand/5 transition-colors flex items-center gap-1"
+                      >
+                        {copiedId === q.id ? <><Check size={9} /> Copied</> : <><Copy size={9} /> Copy</>}
+                      </button>
+                      <button
+                        onClick={() => handleDisplay(q)}
+                        className="caps-tracking text-[9px] border border-brand/20 px-3 py-1.5 bg-brand text-white hover:bg-opacity-80 transition-colors flex items-center gap-1"
+                      >
+                        Display <ArrowRight size={9} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-center max-w-sm mx-auto opacity-40">
-              <p className="font-serif italic text-lg mb-4">No entries found in this collection.</p>
+              <p className="font-serif italic text-lg mb-4">No entries in this collection yet.</p>
               <p className="caps-tracking text-[10px]">Start your dialogue to populate these pages.</p>
             </div>
           )}

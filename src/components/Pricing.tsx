@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Check, CreditCard, Sparkles } from 'lucide-react';
-import { auth } from '../lib/firebase';
-import { cn } from '../lib/utils';
+import { AlertCircle } from 'lucide-react';
+import { auth, authedFetch } from '../lib/firebase';
 
 interface PricingProps {
   onSuccess: () => void;
@@ -10,154 +9,125 @@ interface PricingProps {
 
 export default function Pricing({ onSuccess }: PricingProps) {
   const [loading, setLoading] = useState<string | null>(null);
+  const [signInPrompt, setSignInPrompt] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
-  const handleCheckout = async (priceId: string, mode: 'subscription' | 'payment') => {
+  const MONTHLY_PRICE_ID = import.meta.env.VITE_STRIPE_MONTHLY_PRICE_ID;
+  const YEARLY_PRICE_ID  = import.meta.env.VITE_STRIPE_YEARLY_PRICE_ID;
+
+  const handleCheckout = async (priceId: string) => {
     if (!auth.currentUser) {
-      alert("Please sign in to upgrade.");
+      setSignInPrompt(true);
+      setTimeout(() => setSignInPrompt(false), 4000);
       return;
     }
-
+    setCheckoutError(null);
     setLoading(priceId);
     try {
-      const response = await fetch('/api/create-checkout-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          priceId,
-          mode,
-          customerEmail: auth.currentUser.email,
-          successUrl: window.location.origin + '?payment=success',
-          cancelUrl: window.location.origin + '?payment=cancel',
-        }),
+      const response = await authedFetch('/api/create-checkout-session', {
+        priceId,
+        mode: 'subscription',
+        successUrl: window.location.origin + '?payment=success',
+        cancelUrl: window.location.origin + '?payment=cancel',
       });
-
-      const data = await response.json();
-      if (data.url) {
+      const data = await response.json() as { url?: string; error?: string };
+      if (!response.ok) {
+        setCheckoutError(data.error || 'Checkout unavailable — please try again.');
+      } else if (data.url) {
         window.location.href = data.url;
+      } else {
+        setCheckoutError('Checkout unavailable — please try again.');
       }
-    } catch (error) {
-      console.error("Checkout failed:", error);
+    } catch {
+      setCheckoutError('Something went wrong. Please try again.');
     } finally {
       setLoading(null);
     }
   };
 
-  const MONTHLY_PRICE_ID = import.meta.env.VITE_STRIPE_MONTHLY_PRICE_ID || import.meta.env.VITE_STRIPE_SUBSCRIPTION_PRICE_ID;
-  const YEARLY_PRICE_ID = import.meta.env.VITE_STRIPE_YEARLY_PRICE_ID;
-  const LIFETIME_PRICE_ID = import.meta.env.VITE_STRIPE_LIFETIME_PRICE_ID;
-
   return (
-    <div className="py-12 bg-white/50 border border-brand/10 p-8 rounded-sm shadow-sm max-w-6xl mx-auto">
+    <div className="py-12 bg-white/50 border border-brand/10 p-8 rounded-sm shadow-sm max-w-4xl mx-auto">
+      {signInPrompt && (
+        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+          className="mb-6 flex items-center gap-3 bg-accent/10 border border-accent/20 rounded-sm px-5 py-3 text-[11px] caps-tracking text-accent">
+          <AlertCircle size={14} /> Please sign in first to unlock a plan.
+        </motion.div>
+      )}
+      {checkoutError && (
+        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+          className="mb-6 flex items-center gap-3 bg-red-50 border border-red-200 rounded-sm px-5 py-3 text-[11px] caps-tracking text-red-600">
+          <AlertCircle size={14} /> {checkoutError}
+        </motion.div>
+      )}
+
       <div className="text-center mb-12">
-        <h3 className="font-serif text-3xl text-brand mb-4">Architecture Scaling</h3>
-        <p className="caps-tracking opacity-60 max-w-md mx-auto">
-          Expand your daily provocation bandwidth. Supporting independent quality since 2026.
+        <h3 className="font-serif text-3xl text-brand mb-3">Unlock the Archive</h3>
+        <p className="caps-tracking opacity-50 text-[11px] max-w-sm mx-auto">
+          Over 300 curated questions. Cancel anytime.
         </p>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-8">
-        {/* Monthly Tier */}
-        <div className="flex flex-col text-left p-6 border border-brand/5 bg-white/30 rounded-sm">
-          <div className="border-b border-brand/10 pb-4 mb-6">
-            <span className="caps-tracking opacity-60 text-[10px]">Monthly Subscription</span>
-            <div className="flex items-baseline gap-1 mt-2">
-              <span className="text-4xl font-normal font-serif">$3.00</span>
-              <span className="caps-tracking opacity-40 ml-1 text-sm">/ mo</span>
-            </div>
+      <div className="grid md:grid-cols-2 gap-8 max-w-2xl mx-auto">
+        {/* Monthly */}
+        <div className="flex flex-col text-left p-8 border border-brand/10 bg-white/40 rounded-sm hover:border-brand/30 transition-all">
+          <span className="caps-tracking opacity-40 text-[10px] mb-4">Monthly</span>
+          <div className="flex items-baseline gap-1 mb-1">
+            <span className="text-5xl font-serif font-normal">$3</span>
+            <span className="caps-tracking opacity-40 text-sm">/ month</span>
           </div>
-          
-          <ul className="space-y-3 mb-8 flex-grow">
-            {[
-              "100 generations month",
-              "Unlimited thematic categories",
-              "Member favoriting features",
-              "High-res share cards"
-            ].map((feature) => (
-              <li key={feature} className="flex items-center gap-3 text-xs uppercase tracking-wider font-sans opacity-80">
-                <div className="w-1 h-1 bg-brand/20 rounded-full" />
-                {feature}
+          <p className="caps-tracking opacity-30 text-[10px] mb-8">Billed monthly · Cancel anytime</p>
+
+          <ul className="space-y-3 mb-10 flex-grow">
+            {['100 questions per month', 'All categories', 'Favorites & history', 'Share cards'].map(f => (
+              <li key={f} className="flex items-center gap-3 text-[11px] caps-tracking opacity-60">
+                <div className="w-1 h-1 rounded-full bg-brand/40 shrink-0" /> {f}
               </li>
             ))}
           </ul>
 
           <button
-            onClick={() => handleCheckout(MONTHLY_PRICE_ID, 'subscription')}
+            onClick={() => handleCheckout(MONTHLY_PRICE_ID)}
             disabled={!!loading}
-            className="w-full py-4 bg-brand text-white caps-tracking hover:bg-opacity-80 transition-all disabled:opacity-50"
+            className="w-full py-4 bg-brand text-white caps-tracking text-[10px] hover:bg-opacity-80 transition-all disabled:opacity-50"
           >
-            {loading === MONTHLY_PRICE_ID ? 'Processing...' : 'Subscribe Monthly'}
+            {loading === MONTHLY_PRICE_ID ? 'Redirecting…' : 'Subscribe Monthly'}
           </button>
         </div>
 
-        {/* Yearly Tier */}
-        <div className="flex flex-col text-left p-6 border-2 border-brand bg-brand/[0.02] rounded-sm relative overflow-hidden">
-          <div className="absolute top-0 right-0 bg-brand text-white text-[8px] caps-tracking px-4 py-1 translate-x-3 translate-y-3 rotate-45">Best Value</div>
-          
-          <div className="border-b border-brand/10 pb-4 mb-6">
-            <span className="caps-tracking opacity-60 text-[10px]">Yearly Collective</span>
-            <div className="flex items-baseline gap-1 mt-2">
-              <span className="text-4xl font-normal font-serif">$2.00</span>
-              <span className="caps-tracking opacity-40 ml-1 text-sm">/ mo</span>
-            </div>
-            <p className="text-[10px] caps-tracking opacity-40 mt-1 italic">Billed as $24.00 per year</p>
+        {/* Yearly — highlighted */}
+        <div className="flex flex-col text-left p-8 border-2 border-brand bg-brand/[0.02] rounded-sm relative overflow-hidden">
+          <div className="absolute top-3 right-3 bg-brand text-white caps-tracking text-[9px] px-3 py-1 rounded-sm">
+            Best Value
           </div>
-          
-          <ul className="space-y-3 mb-8 flex-grow">
-            {[
-              "500 generations month",
-              "Priority archival access",
-              "Beta feature preview",
-              "Exclusive premium decks"
-            ].map((feature) => (
-              <li key={feature} className="flex items-center gap-3 text-xs uppercase tracking-wider font-sans opacity-80">
-                <div className="w-1.5 h-1.5 bg-brand rounded-full" />
-                {feature}
+
+          <span className="caps-tracking opacity-40 text-[10px] mb-4">Yearly</span>
+          <div className="flex items-baseline gap-1 mb-1">
+            <span className="text-5xl font-serif font-normal">$2</span>
+            <span className="caps-tracking opacity-40 text-sm">/ month</span>
+          </div>
+          <p className="caps-tracking opacity-30 text-[10px] mb-8">Billed as $24/year · Save 33%</p>
+
+          <ul className="space-y-3 mb-10 flex-grow">
+            {['500 questions per month', 'All categories', 'Favorites & history', 'Early feature access'].map(f => (
+              <li key={f} className="flex items-center gap-3 text-[11px] caps-tracking opacity-60">
+                <div className="w-1.5 h-1.5 rounded-full bg-brand shrink-0" /> {f}
               </li>
             ))}
           </ul>
 
           <button
-            onClick={() => handleCheckout(YEARLY_PRICE_ID, 'subscription')}
+            onClick={() => handleCheckout(YEARLY_PRICE_ID)}
             disabled={!!loading}
-            className="w-full py-4 bg-brand text-white caps-tracking hover:shadow-lg transition-all disabled:opacity-50"
+            className="w-full py-4 bg-brand text-white caps-tracking text-[10px] hover:bg-opacity-80 transition-all disabled:opacity-50 shadow-md"
           >
-            {loading === YEARLY_PRICE_ID ? 'Processing...' : 'Secure Yearly Plan'}
-          </button>
-        </div>
-
-        {/* Lifetime Purchase */}
-        <div className="flex flex-col text-left p-6 border border-brand/5 bg-white/30 rounded-sm">
-          <div className="border-b border-brand/10 pb-4 mb-6">
-            <span className="caps-tracking opacity-60 text-[10px]">Permanence Layer</span>
-            <div className="flex items-baseline gap-1 mt-2">
-              <span className="text-4xl font-normal font-serif">$29.00</span>
-              <span className="caps-tracking opacity-40 ml-2 text-sm">Lifetime</span>
-            </div>
-          </div>
-          
-          <ul className="space-y-3 mb-8 flex-grow">
-            {[
-              "Endless ownership",
-              "Highest priority generation",
-              "Offline printed PDF exports",
-              "Legacy member status"
-            ].map((feature) => (
-              <li key={feature} className="flex items-center gap-3 text-xs uppercase tracking-wider font-sans opacity-80">
-                <div className="w-1 h-1 bg-brand/20 rounded-full" />
-                {feature}
-              </li>
-            ))}
-          </ul>
-
-          <button
-            onClick={() => handleCheckout(LIFETIME_PRICE_ID, 'payment')}
-            disabled={!!loading}
-            className="w-full py-4 border border-brand text-brand caps-tracking hover:bg-brand hover:text-white transition-all disabled:opacity-50"
-          >
-            {loading === LIFETIME_PRICE_ID ? 'Processing...' : 'Buy Lifetime Access'}
+            {loading === YEARLY_PRICE_ID ? 'Redirecting…' : 'Subscribe Yearly — Save 33%'}
           </button>
         </div>
       </div>
+
+      <p className="text-center caps-tracking opacity-20 text-[10px] mt-8">
+        Secure payment via Stripe · No commitment · Cancel in 2 clicks
+      </p>
     </div>
   );
 }

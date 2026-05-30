@@ -1,0 +1,46 @@
+name = "icebreaker-question-app"
+main = "worker/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+binding = "ASSETS"
+
+# Non-secret runtime vars
+[vars]
+FIREBASE_PROJECT_ID = "gen-lang-client-0170753836"
+FIREBASE_DATABASE_ID = "ai-studio-ce545956-aa8d-4e12-9ad5-c58ab798d709"
+# Stripe price IDs — not secret (visible in client JS anyway)
+STRIPE_MONTHLY_PRICE_ID = "price_1TbuoIGGeaVzeXJn6DUqMXnR"
+STRIPE_YEARLY_PRICE_ID  = "price_1TbusLGGeaVzeXJnZSPNgkFU"
+# Email (Resend) — replace with a verified sender from your Resend domain.
+# Uses onboarding@resend.dev (test-only) until RESEND_FROM is set.
+RESEND_FROM = "Dinner Table Cards <onboarding@resend.dev>"
+
+# Workers AI — powers "Surprise Me" on-demand question generation (free tier)
+[ai]
+binding = "AI"
+
+# KV — stores Stripe customer → Firebase UID mapping, referral codes, token cache
+[[kv_namespaces]]
+binding = "APP_KV"
+id = "82aa3336b53041068bf461968d0397c8"
+
+# Cron — reset monthly usageCount for active subscribers on the 1st of each month
+[triggers]
+crons = ["0 0 1 * *"]
+
+# Secrets (set via `wrangler secret put <NAME>` — never committed):
+#   STRIPE_SECRET_KEY
+#   STRIPE_WEBHOOK_SECRET
+#   FIREBASE_SERVICE_ACCOUNT_EMAIL
+#   FIREBASE_PRIVATE_KEY
+#   RESEND_API_KEY  ← get from resend.com/api-keys (emails silently skipped until set)
+#
+# Build-time VITE_ vars (set in .env locally or Cloudflare build environment):
+#   VITE_STRIPE_PUBLISHABLE_KEY
+#   VITE_STRIPE_MONTHLY_PRICE_ID
+#   VITE_STRIPE_YEARLY_PRICE_ID
+#   VITE_STRIPE_LIFETIME_PRICE_ID

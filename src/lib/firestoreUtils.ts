@@ -1,6 +1,5 @@
-import { auth, db } from './firebase';
+import { auth } from './firebase';
 import { OperationType, FirestoreErrorInfo } from '../types';
-import { doc, updateDoc, increment } from 'firebase/firestore';
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {
@@ -23,13 +22,8 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-export async function incrementUsage(userId: string) {
-  const userRef = doc(db, 'users', userId);
-  try {
-    await updateDoc(userRef, {
-      usageCount: increment(1)
-    });
-  } catch (error) {
-    console.warn("Could not increment usage:", error);
-  }
-}
+// NOTE: Usage counting + streak tracking moved server-side to the Worker's
+// POST /api/consume endpoint (see worker/index.ts handleConsume). The client
+// no longer writes usageCount/streak fields — Firestore rules now reject those
+// writes, and the service account is the sole writer. See src/lib/firebase.ts
+// authedFetch + components/QuestionDisplay.tsx.

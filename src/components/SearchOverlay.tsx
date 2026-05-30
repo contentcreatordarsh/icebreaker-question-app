@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Search, X, Heart, History as HistoryIcon, Globe } from 'lucide-react';
+import { motion } from 'motion/react';
+import { Search, X, Heart, History as HistoryIcon, Globe, ArrowRight } from 'lucide-react';
 import { db, auth } from '../lib/firebase';
 import { collection, query, getDocs, limit } from 'firebase/firestore';
-import { Question, DailyQuestion } from '../types';
+import { DailyQuestion } from '../types';
 import { cn } from '../lib/utils';
 
 interface SearchResult {
@@ -11,27 +11,26 @@ interface SearchResult {
   text: string;
   category: string;
   source: 'Global' | 'Favorites' | 'History';
+  raw: DailyQuestion;
 }
 
 interface SearchOverlayProps {
   onClose: () => void;
+  onSelectQuestion: (q: DailyQuestion) => void;
 }
 
-export default function SearchOverlay({ onClose }: SearchOverlayProps) {
+export default function SearchOverlay({ onClose, onSelectQuestion }: SearchOverlayProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   useEffect(() => {
-    const delayDebounceFn = setTimeout(() => {
-      if (searchTerm.trim().length >= 2) {
-        performSearch();
-      } else {
-        setResults([]);
-      }
+    const timer = setTimeout(() => {
+      if (searchTerm.trim().length >= 2) performSearch();
+      else setResults([]);
     }, 400);
-
-    return () => clearTimeout(delayDebounceFn);
+    return () => clearTimeout(timer);
   }, [searchTerm]);
 
   async function performSearch() {
@@ -40,64 +39,52 @@ export default function SearchOverlay({ onClose }: SearchOverlayProps) {
     const allResults: SearchResult[] = [];
 
     try {
-      // 1. Search Daily Questions (Global Pool for this app)
+      // 1. Global pool (cached daily questions)
       const dailySnap = await getDocs(query(collection(db, 'daily_questions'), limit(100)));
       dailySnap.forEach(doc => {
         const data = doc.data() as DailyQuestion;
-        if (data.text.toLowerCase().includes(searchLower)) {
-          allResults.push({
-            id: doc.id,
-            text: data.text,
-            category: data.category,
-            source: 'Global'
-          });
+        if (data.text?.toLowerCase().includes(searchLower)) {
+          allResults.push({ id: doc.id, text: data.text, category: data.category, source: 'Global', raw: data });
         }
       });
 
-      // 2. Search User Specifics if logged in
+      // 2. User-specific (if signed in)
       if (auth.currentUser) {
-        const userId = auth.currentUser.uid;
-        
-        // Favorites
-        const favSnap = await getDocs(collection(db, 'users', userId, 'favorites'));
+        const uid = auth.currentUser.uid;
+
+        const favSnap = await getDocs(collection(db, 'users', uid, 'favorites'));
         favSnap.forEach(doc => {
-          const data = doc.data() as any; // Using any as it might be Question or DailyQuestion
-          if (data.text.toLowerCase().includes(searchLower)) {
-            if (!allResults.find(r => r.id === doc.id)) {
-              allResults.push({
-                id: doc.id,
-                text: data.text,
-                category: data.category,
-                source: 'Favorites'
-              });
-            }
+          const data = doc.data() as DailyQuestion;
+          if (data.text?.toLowerCase().includes(searchLower) && !allResults.find(r => r.id === doc.id)) {
+            allResults.push({ id: doc.id, text: data.text, category: data.category, source: 'Favorites', raw: data });
           }
         });
 
-        // History
-        const histSnap = await getDocs(collection(db, 'users', userId, 'history'));
+        const histSnap = await getDocs(collection(db, 'users', uid, 'history'));
         histSnap.forEach(doc => {
-          const data = doc.data() as any;
-          if (data.text.toLowerCase().includes(searchLower)) {
-            if (!allResults.find(r => r.id === doc.id)) {
-              allResults.push({
-                id: doc.id,
-                text: data.text,
-                category: data.category,
-                source: 'History'
-              });
-            }
+          const data = doc.data() as DailyQuestion;
+          if (data.text?.toLowerCase().includes(searchLower) && !allResults.find(r => r.id === doc.id)) {
+            allResults.push({ id: doc.id, text: data.text, category: data.category, source: 'History', raw: data });
           }
         });
       }
 
       setResults(allResults);
     } catch (error) {
-      console.error("Search error:", error);
+      console.error('Search error:', error);
     } finally {
       setLoading(false);
     }
   }
+
+  const handleCopy = (result: SearchResult) => {
+    navigator.clipboard.writeText(result.text).then(() => {
+      setCopiedId(result.id);
+      setTimeout(() => setCopiedId(null), 1500);
+    }).catch(() => {
+      // Clipboard API unavailable (HTTP, permissions denied) — silently skip feedback
+    });
+  };
 
   return (
     <motion.div
@@ -119,45 +106,68 @@ export default function SearchOverlay({ onClose }: SearchOverlayProps) {
           <input
             autoFocus
             type="text"
-            placeholder="Search keywords (e.g. 'victory', 'gratitude', 'future')..."
-            className="w-full bg-transparent border-b border-brand/10 py-6 pl-12 text-2xl md:text-4xl font-serif italic outline-none placeholder:opacity-20 translate-y-[-2px]"
+            placeholder="Search keywords…"
+            className="w-full bg-transparent border-b border-brand/10 py-6 pl-12 text-2xl md:text-4xl font-serif italic outline-none placeholder:opacity-20"
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={e => setSearchTerm(e.target.value)}
           />
         </div>
 
         <div className="flex-grow overflow-y-auto pr-4 no-scrollbar">
           {loading ? (
             <div className="flex flex-col items-center justify-center h-40 opacity-40 italic font-serif">
-              Scanning the archives...
+              Scanning the archives…
             </div>
           ) : results.length > 0 ? (
-            <div className="space-y-12">
-              {results.map((result) => (
+            <div className="space-y-8">
+              {results.map(result => (
                 <div key={result.id} className="group border-b border-brand/5 pb-8">
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="caps-tracking opacity-40">{result.category}</span>
-                    <span className="h-[1px] w-4 bg-brand/10" />
-                    <span className="caps-tracking flex items-center gap-1.5 text-accent/60">
-                      {result.source === 'Favorites' && <Heart size={10} />}
-                      {result.source === 'History' && <HistoryIcon size={10} />}
-                      {result.source === 'Global' && <Globe size={10} />}
-                      {result.source}
-                    </span>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-3">
+                      <span className="caps-tracking opacity-40">{result.category}</span>
+                      <span className="h-[1px] w-4 bg-brand/10" />
+                      <span className="caps-tracking flex items-center gap-1.5 text-accent/60">
+                        {result.source === 'Favorites' && <Heart size={10} />}
+                        {result.source === 'History' && <HistoryIcon size={10} />}
+                        {result.source === 'Global' && <Globe size={10} />}
+                        {result.source}
+                      </span>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => handleCopy(result)}
+                        className="caps-tracking text-[9px] border border-brand/10 px-3 py-1.5 hover:bg-brand/5 transition-colors"
+                      >
+                        {copiedId === result.id ? 'Copied' : 'Copy'}
+                      </button>
+                      <button
+                        onClick={() => { onSelectQuestion(result.raw); onClose(); }}
+                        className="caps-tracking text-[9px] border border-brand/20 px-3 py-1.5 bg-brand text-white hover:bg-opacity-80 transition-colors flex items-center gap-1.5"
+                      >
+                        Display <ArrowRight size={10} />
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-xl md:text-2xl font-serif italic leading-relaxed group-hover:text-accent transition-colors">
-                    "{result.text}"
-                  </p>
+
+                  <button
+                    className="text-left w-full"
+                    onClick={() => { onSelectQuestion(result.raw); onClose(); }}
+                  >
+                    <p className="text-xl md:text-2xl font-serif italic leading-relaxed group-hover:text-accent transition-colors cursor-pointer">
+                      "{result.text}"
+                    </p>
+                  </button>
                 </div>
               ))}
             </div>
           ) : searchTerm.length >= 2 ? (
             <div className="text-center py-20 opacity-30 italic font-serif text-xl px-8">
-              "Silence is sometimes the only answer..." <br />
-              <span className="text-sm caps-tracking mt-4 block">No matches found for your query.</span>
+              No matches found.
             </div>
           ) : (
-             <div className="text-center py-20 opacity-20 caps-tracking italic text-xs">
+            <div className="text-center py-20 opacity-20 caps-tracking italic text-xs">
               Enter at least two characters to search.
             </div>
           )}
