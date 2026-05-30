@@ -219,23 +219,6 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return Response.json({ status: 'ok' });
   }
 
-  // ── Firebase auth handler proxy ───────────────────────────────────────────
-  // Firebase's signInWithRedirect uses [authDomain]/__/auth/ as the OAuth
-  // callback route. Since authDomain is now dinnertablecards.xyz, we proxy
-  // these requests transparently to Firebase's real auth infrastructure so
-  // the Google sign-in screen shows "dinnertablecards.xyz" instead of the
-  // raw Firebase project ID.
-  if (url.pathname.startsWith('/__/auth/')) {
-    const firebaseAuthUrl =
-      `https://gen-lang-client-0170753836.firebaseapp.com${url.pathname}${url.search}`;
-    const proxyReq = new Request(firebaseAuthUrl, {
-      method: request.method,
-      headers: request.headers,
-      body: request.body,
-      redirect: 'manual', // let the browser follow redirects so OAuth flow works
-    });
-    return fetch(proxyReq);
-  }
   if (url.pathname === '/api/create-checkout-session' && request.method === 'POST') {
     return handleCheckout(request, env);
   }
@@ -268,8 +251,33 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  /** Every response — API JSON and static assets — gets security headers applied. */
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    // ── Firebase auth handler proxy ─────────────────────────────────────────
+    // Firebase's signInWithRedirect uses [authDomain]/__/auth/ as the OAuth
+    // callback route. Since authDomain is dinnertablecards.xyz, we proxy
+    // these requests to Firebase's real auth infrastructure at firebaseapp.com.
+    //
+    // IMPORTANT: This proxy must bypass addSecurityHeaders — our strict CSP
+    // (script-src 'self') would block Firebase's auth handler scripts, and
+    // X-Frame-Options: DENY would break the auth iframe on return.
+    if (url.pathname.startsWith('/__/auth/')) {
+      const firebaseUrl =
+        `https://gen-lang-client-0170753836.firebaseapp.com${url.pathname}${url.search}`;
+      // Strip the Host header so Firebase sees its own hostname, not ours.
+      // All other headers (cookies, Accept, etc.) are forwarded as-is.
+      const proxyHeaders = new Headers(request.headers);
+      proxyHeaders.delete('host');
+      return fetch(new Request(firebaseUrl, {
+        method:   request.method,
+        headers:  proxyHeaders,
+        body:     request.body,
+        redirect: 'manual', // forward 302s to the browser; don't follow server-side
+      }));
+    }
+
+    /** Every other response gets security headers applied. */
     const response = await routeRequest(request, env);
     return addSecurityHeaders(response);
   },
