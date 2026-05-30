@@ -1,5 +1,14 @@
+import type { Timestamp, FieldValue } from 'firebase/firestore';
+
 export type Difficulty = 'Light' | 'Deep' | 'Random';
 export type Category = 'Icebreaker' | 'Deep Talk' | 'Funny' | 'Team Building' | 'Date Night' | 'Philosophy' | 'Creative Sparks';
+
+/** Union type for Firestore timestamp fields.
+ *  - `FieldValue` when calling serverTimestamp() before the write (client-side placeholder)
+ *  - `Timestamp` after reading back from Firestore
+ *  - `Date | string` from server-side REST writes or JSON serialisation
+ */
+export type FirestoreTimestamp = Timestamp | FieldValue | Date | string;
 
 /** Categories that require a premium subscription to access */
 export const PREMIUM_CATEGORIES: readonly Category[] = ['Date Night', 'Philosophy', 'Creative Sparks'] as const;
@@ -48,7 +57,7 @@ export interface UserProfile {
   subscriptionStatus: 'none' | 'active' | 'canceled' | 'past_due';
   lifetimePurchase: boolean;
   usageCount: number;
-  createdAt: any;
+  createdAt: FirestoreTimestamp;
   // Streak tracking — updated by incrementUsage()
   currentStreak?: number;
   longestStreak?: number;

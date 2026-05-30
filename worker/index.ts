@@ -143,7 +143,13 @@ async function sendEmail(
   }
 }
 
-function welcomeEmailHtml(email: string): string {
+const APP_URL = 'https://dinnertablecards.xyz';
+
+/** Shared email footer / button styles */
+const EMAIL_BUTTON = `display:inline-block; background:#5A5A40; color:#F5F2ED; font-size:11px; letter-spacing:0.3em; text-transform:uppercase; padding:14px 28px; text-decoration:none;`;
+const EMAIL_FOOTER = `<p style="font-size: 11px; color: #1A1A1A; opacity: 0.3; margin-top: 40px;">© ${new Date().getFullYear()} Cultivating Meaningful Dialogue · <a href="${APP_URL}/account" style="color:#1A1A1A;">Manage subscription</a></p>`;
+
+function welcomeEmailHtml(_email: string): string {
   return `
   <div style="font-family: Georgia, serif; max-width: 560px; margin: 0 auto; padding: 40px 24px; background: #F5F2ED; color: #1A1A1A;">
     <p style="font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase; opacity: 0.4; margin: 0 0 24px;">Dinner Table Cards · Welcome</p>
@@ -154,10 +160,8 @@ function welcomeEmailHtml(email: string): string {
     <p style="font-size: 15px; line-height: 1.8; opacity: 0.7; margin: 0 0 32px;">
       Your free plan includes 25 questions to get you started. When you're ready for more, upgrade any time from the app.
     </p>
-    <a href="https://icebreaker-question-app.falling-hall-ac41.workers.dev" style="display:inline-block; background:#1A1A1A; color:#F5F2ED; font-size:11px; letter-spacing:0.3em; text-transform:uppercase; padding:14px 28px; text-decoration:none;">
-      Open the app →
-    </a>
-    <p style="font-size: 11px; opacity: 0.3; margin-top: 40px;">© 2026 Cultivating Meaningful Dialogue</p>
+    <a href="${APP_URL}" style="${EMAIL_BUTTON}">Open the app →</a>
+    ${EMAIL_FOOTER}
   </div>`;
 }
 
@@ -172,10 +176,33 @@ function premiumEmailHtml(plan: string): string {
     <p style="font-size: 15px; line-height: 1.8; opacity: 0.7; margin: 0 0 32px;">
       Manage or cancel your subscription at any time from your account page.
     </p>
-    <a href="https://icebreaker-question-app.falling-hall-ac41.workers.dev" style="display:inline-block; background:#1A1A1A; color:#F5F2ED; font-size:11px; letter-spacing:0.3em; text-transform:uppercase; padding:14px 28px; text-decoration:none;">
-      Start exploring →
-    </a>
-    <p style="font-size: 11px; opacity: 0.3; margin-top: 40px;">© 2026 Cultivating Meaningful Dialogue</p>
+    <a href="${APP_URL}" style="${EMAIL_BUTTON}">Start exploring →</a>
+    ${EMAIL_FOOTER}
+  </div>`;
+}
+
+function streakMilestoneEmailHtml(streak: number, topCategory: string): string {
+  const emojis: Record<number, string> = { 3: '🌱', 7: '🔥', 14: '⚡', 30: '🏆' };
+  const labels: Record<number, string> = {
+    3:  'Three days of better conversations.',
+    7:  'One week of meaningful dialogue.',
+    14: 'Two weeks — you\'re building a real habit.',
+    30: 'Thirty days. You\'ve changed how you connect.',
+  };
+  return `
+  <div style="font-family: Georgia, serif; max-width: 560px; margin: 0 auto; padding: 40px 24px; background: #F5F2ED; color: #1A1A1A;">
+    <p style="font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase; opacity: 0.4; margin: 0 0 24px;">Dinner Table Cards · Streak</p>
+    <p style="font-size: 40px; margin: 0 0 12px;">${emojis[streak] ?? '🔥'}</p>
+    <h1 style="font-size: 28px; font-style: italic; font-weight: 400; margin: 0 0 16px; line-height: 1.2;">${labels[streak] ?? `${streak} days in a row.`}</h1>
+    <p style="font-size: 15px; line-height: 1.8; opacity: 0.7; margin: 0 0 12px;">
+      You've used Dinner Table Cards <strong>${streak} days in a row</strong>.
+      Your most-used category: <em>${topCategory}</em>.
+    </p>
+    <p style="font-size: 15px; line-height: 1.8; opacity: 0.7; margin: 0 0 32px;">
+      Keep the conversation going — today's question is waiting.
+    </p>
+    <a href="${APP_URL}" style="${EMAIL_BUTTON}">Open today's question →</a>
+    ${EMAIL_FOOTER}
   </div>`;
 }
 
@@ -741,6 +768,17 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
     return Response.json({ error: 'Increment failed' }, { status: 500 });
   }
 
+  // Determine the new streak for email logic — reuses `today` and `lastActive` declared above
+  const yesterdayForMilestone = new Date();
+  yesterdayForMilestone.setDate(yesterdayForMilestone.getDate() - 1);
+  const yesterdayStr = yesterdayForMilestone.toISOString().split('T')[0];
+  const prevStreakVal = (user.currentStreak as number) || 0;
+  const newStreak = lastActive === today
+    ? prevStreakVal  // same day — streak unchanged
+    : lastActive === yesterdayStr
+      ? prevStreakVal + 1
+      : 1;
+
   // Send welcome email the very first time a user consumes a question.
   if (usageCount === 0 && auth.email) {
     sendEmail(
@@ -749,6 +787,24 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
       welcomeEmailHtml(auth.email),
       env,
     ).catch(() => {});
+  }
+
+  // Send streak milestone emails at 3, 7, 14, 30 days.
+  // Only fire when the streak crosses the milestone for the first time today.
+  const STREAK_MILESTONES = [3, 7, 14, 30];
+  if (auth.email && lastActive !== today && STREAK_MILESTONES.includes(newStreak)) {
+    // Deduplicate: use KV to ensure we only send once per milestone per user
+    const milestoneKey = `streak-email:${uid}:${newStreak}`;
+    const already = await env.APP_KV.get(milestoneKey);
+    if (!already) {
+      await env.APP_KV.put(milestoneKey, '1', { expirationTtl: 60 * 60 * 24 * 365 });
+      sendEmail(
+        auth.email,
+        `${newStreak} days in a row 🔥 — Dinner Table Cards`,
+        streakMilestoneEmailHtml(newStreak, 'Deep Talk'),
+        env,
+      ).catch(() => {});
+    }
   }
 
   return Response.json({ allowed: true, usageCount: usageCount + 1, limit });

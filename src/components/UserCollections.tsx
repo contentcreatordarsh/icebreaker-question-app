@@ -2,9 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { db, auth } from '../lib/firebase';
 import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
-import { DailyQuestion } from '../types';
+import { DailyQuestion, Category } from '../types';
 import { X, Bookmark, History as HistoryIcon, Copy, Check, ArrowRight } from 'lucide-react';
 import { cn } from '../lib/utils';
+
+/** Shape of documents stored in /users/{uid}/favorites and /users/{uid}/history */
+interface StoredQuestion {
+  id: string;
+  text: string;
+  category: Category;
+  date?: string;
+  savedAt?: { toDate(): Date };
+  discussedAt?: { toDate(): Date };
+}
 
 interface UserCollectionsProps {
   onClose: () => void;
@@ -13,7 +23,7 @@ interface UserCollectionsProps {
 
 export default function UserCollections({ onClose, onSelectQuestion }: UserCollectionsProps) {
   const [activeTab, setActiveTab] = useState<'favorites' | 'history'>('favorites');
-  const [questions, setQuestions] = useState<any[]>([]);
+  const [questions, setQuestions] = useState<StoredQuestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -39,13 +49,13 @@ export default function UserCollections({ onClose, onSelectQuestion }: UserColle
     fetchData();
   }, [activeTab]);
 
-  const handleCopy = (q: any) => {
+  const handleCopy = (q: StoredQuestion) => {
     navigator.clipboard.writeText(q.text);
     setCopiedId(q.id);
     setTimeout(() => setCopiedId(null), 1500);
   };
 
-  const handleDisplay = (q: any) => {
+  const handleDisplay = (q: StoredQuestion) => {
     const question: DailyQuestion = {
       questionId: q.id,
       text: q.text,

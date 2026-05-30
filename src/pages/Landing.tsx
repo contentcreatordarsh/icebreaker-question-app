@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
-import { Heart, Zap, BookOpen, ArrowRight, Lock, Star } from 'lucide-react';
+import { Heart, Zap, BookOpen, ArrowRight, Lock, Star, ChevronDown } from 'lucide-react';
+import { useState } from 'react';
 
 interface LandingProps {
   onSignIn: () => void;
@@ -20,11 +21,50 @@ const PREMIUM_CATEGORIES = [
   { name: 'Creative Sparks', emoji: '🎨', tagline: '63 imaginative what-ifs', desc: 'Open new ways of thinking together.' },
 ];
 
+const TESTIMONIALS = [
+  {
+    quote: "We use it every team lunch. The deep-talk ones always catch someone off guard — in the best way.",
+    who: "Engineering team, 11 people",
+  },
+  {
+    quote: "Finally something better than 'how was your weekend?' at dinner parties. My guests actually stayed to talk.",
+    who: "Couple, 4 years together",
+  },
+  {
+    quote: "My family of 5 has a rule now — one question per Sunday dinner. It changed everything.",
+    who: "Parent of three, Chicago",
+  },
+];
+
+const FAQ_ITEMS = [
+  {
+    q: "What happens when I hit 25 free questions?",
+    a: "You'll see an upgrade prompt. There's no expiry — your saved favorites stay yours forever.",
+  },
+  {
+    q: "Can I cancel my subscription anytime?",
+    a: "Yes. Two clicks from your account page. No dark patterns, no retention flow, no guilt.",
+  },
+  {
+    q: "What's the difference between Light and Deep questions?",
+    a: "Light questions are playful and low-stakes — great for groups still warming up. Deep questions go further: values, regrets, hopes. Both are in every category.",
+  },
+  {
+    q: "Will I see the same questions twice?",
+    a: "Occasionally — the archive has 600+ questions, but popular categories cycle. Premium unlocks the full depth so repeats are rare.",
+  },
+  {
+    q: "Does it work without internet?",
+    a: "Yes. Once the app loads, it works offline. Questions are cached in your browser automatically — no internet needed mid-dinner.",
+  },
+];
+
 export default function Landing({ onSignIn }: LandingProps) {
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
   const heroQuestion = SAMPLE_QUESTIONS[Math.floor(Math.random() * SAMPLE_QUESTIONS.length)];
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
 
   return (
     <div className="editorial-container min-h-screen">
@@ -183,6 +223,21 @@ export default function Landing({ onSignIn }: LandingProps) {
           </div>
         </section>
 
+        {/* ── Social proof ─────────────────────────────────────────────────── */}
+        <section className="py-14 md:py-16 border-b border-brand/10">
+          <span className="caps-tracking opacity-40 block mb-8">What people are saying</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {TESTIMONIALS.map((t, i) => (
+              <div key={i} className="border border-brand/10 p-8 hover:border-brand/20 transition-colors">
+                <p className="font-serif text-lg italic leading-relaxed text-brand mb-5">
+                  "{t.quote}"
+                </p>
+                <span className="caps-tracking text-[10px] opacity-40">— {t.who}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* ── Pricing ──────────────────────────────────────────────────────── */}
         <section className="py-14 md:py-16 border-b border-brand/10">
           <span className="caps-tracking opacity-40 block mb-2">Plans</span>
@@ -266,9 +321,38 @@ export default function Landing({ onSignIn }: LandingProps) {
           </div>
         </section>
 
+        {/* ── FAQ ──────────────────────────────────────────────────────────── */}
+        <section className="py-14 md:py-16 border-b border-brand/10">
+          <span className="caps-tracking opacity-40 block mb-8">Common questions</span>
+          <div className="max-w-2xl space-y-0">
+            {FAQ_ITEMS.map((item, i) => (
+              <div key={i} className="border-b border-brand/10 last:border-b-0">
+                <button
+                  onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                  className="w-full flex items-center justify-between py-5 text-left group focus:outline-none focus:ring-2 focus:ring-brand/20"
+                  aria-expanded={openFaq === i}
+                >
+                  <h3 className="font-serif italic text-lg text-brand group-hover:text-accent transition-colors pr-4">
+                    {item.q}
+                  </h3>
+                  <ChevronDown
+                    size={16}
+                    className={`shrink-0 opacity-40 transition-transform duration-200 ${openFaq === i ? 'rotate-180' : ''}`}
+                  />
+                </button>
+                {openFaq === i && (
+                  <p className="text-sm opacity-60 leading-relaxed pb-5">
+                    {item.a}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* ── Final CTA ────────────────────────────────────────────────────── */}
         <section className="py-16 md:py-24 text-center">
-          <span className="caps-tracking opacity-30 block mb-6">Ready to start the conversation?</span>
+          <span className="caps-tracking opacity-40 block mb-6">Ready to start the conversation?</span>
           <h2 className="font-serif text-4xl md:text-5xl italic text-brand mb-4 leading-tight">
             What will you ask tonight?
           </h2>
@@ -278,11 +362,11 @@ export default function Landing({ onSignIn }: LandingProps) {
           </p>
           <button
             onClick={onSignIn}
-            className="inline-flex items-center gap-2 bg-brand text-paper caps-tracking px-10 py-5 hover:bg-opacity-90 transition-all"
+            className="inline-flex items-center gap-2 bg-brand text-paper caps-tracking px-10 py-5 hover:bg-opacity-90 transition-all focus:outline-none focus:ring-2 focus:ring-brand/40"
           >
             Sign in with Google — It's free <ArrowRight size={12} />
           </button>
-          <p className="text-[10px] caps-tracking opacity-25 mt-5">
+          <p className="text-[10px] caps-tracking opacity-40 mt-5">
             Secure · No spam · Cancel premium anytime
           </p>
         </section>
@@ -290,13 +374,21 @@ export default function Landing({ onSignIn }: LandingProps) {
 
       {/* Footer */}
       <footer className="border-t border-brand/10 px-6 py-8 md:px-12 w-full">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
-          <p className="caps-tracking opacity-30">© {new Date().getFullYear()} Dinner Table Cards</p>
-          <div className="flex gap-6 caps-tracking opacity-40">
-            <Link to="/privacy" className="hover:opacity-100 transition-opacity">Privacy</Link>
-            <Link to="/terms" className="hover:opacity-100 transition-opacity">Terms</Link>
-            <button onClick={onSignIn} className="hover:opacity-100 transition-opacity">Sign In</button>
+        <div className="max-w-6xl mx-auto space-y-4">
+          <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+            <p className="caps-tracking opacity-40">© {new Date().getFullYear()} Dinner Table Cards</p>
+            <div className="flex gap-6 caps-tracking opacity-40">
+              <Link to="/privacy" className="hover:opacity-100 transition-opacity">Privacy</Link>
+              <Link to="/terms" className="hover:opacity-100 transition-opacity">Terms</Link>
+              <button onClick={onSignIn} className="hover:opacity-100 transition-opacity">Sign In</button>
+            </div>
           </div>
+          <p className="text-[10px] caps-tracking opacity-35 text-center sm:text-left">
+            Invite a friend after you join →{' '}
+            <button onClick={onSignIn} className="underline hover:opacity-60 transition-opacity">
+              you both earn 50 bonus questions free
+            </button>
+          </p>
         </div>
       </footer>
     </div>

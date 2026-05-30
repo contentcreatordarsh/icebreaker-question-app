@@ -192,12 +192,14 @@ export default function QuestionDisplay({
     }
   }, [category, difficulty, loadInteractionState, isPremium, onUpgrade]);
 
+  const APP_URL = 'https://dinnertablecards.xyz';
+
   const handleShare = () => {
     if (dailyQuestion) {
       navigator.share?.({
-        title: 'Dinner Table Question',
-        text: dailyQuestion.text,
-        url: window.location.href,
+        title: 'Dinner Table Cards',
+        text: `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`,
+        url: APP_URL,
       }).catch(() => {});
     }
   };
@@ -205,7 +207,7 @@ export default function QuestionDisplay({
   const copyToClipboard = () => {
     if (dailyQuestion) {
       navigator.clipboard.writeText(
-        `"${dailyQuestion.text}" — Today's Dinner Table question: ${window.location.href}`
+        `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`
       );
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
@@ -214,8 +216,9 @@ export default function QuestionDisplay({
 
   const getShareUrls = () => {
     if (!dailyQuestion) return { twitter: '', facebook: '', linkedin: '' };
-    const text = encodeURIComponent(`"${dailyQuestion.text}" — Today's Dinner Table question:`);
-    const url  = encodeURIComponent(window.location.href);
+    const shareText = `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`;
+    const text = encodeURIComponent(shareText);
+    const url  = encodeURIComponent(APP_URL);
     return {
       twitter:  `https://twitter.com/intent/tweet?text=${text}&url=${url}`,
       facebook: `https://www.facebook.com/sharer/sharer.php?u=${url}`,
@@ -288,6 +291,18 @@ export default function QuestionDisplay({
               Unlock the Archive
             </button>
             <p className="text-[9px] caps-tracking opacity-30">From $2/month · Cancel anytime</p>
+            <div className="mt-4 pt-4 border-t border-brand/10">
+              <p className="text-[9px] caps-tracking opacity-40 text-center">
+                Or invite a friend —{' '}
+                <button
+                  onClick={onUpgrade}
+                  className="underline hover:opacity-60 transition-opacity"
+                >
+                  earn 50 free questions
+                </button>
+                {' '}via your profile
+              </p>
+            </div>
           </div>
         </motion.div>
       </div>

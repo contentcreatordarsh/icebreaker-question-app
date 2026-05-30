@@ -533,7 +533,14 @@ export default function App() {
       </footer>
 
       {/* Onboarding toasts — shown once to new users */}
-      <OnboardingToast isSignedIn={!!user} />
+      <OnboardingToast
+        isSignedIn={!!user}
+        referralLink={
+          userProfile?.referralCode
+            ? `${window.location.origin}/?ref=${userProfile.referralCode}`
+            : undefined
+        }
+      />
 
       {/* Overlays */}
       <AnimatePresence>

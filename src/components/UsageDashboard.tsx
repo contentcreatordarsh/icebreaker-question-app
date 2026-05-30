@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { X, TrendingUp, Flame, Bookmark, Award, Zap, Gift, Copy, Check } from 'lucide-react';
 import { db, auth } from '../lib/firebase';
 import { collection, getCountFromServer } from 'firebase/firestore';
-import { UserProfile } from '../types';
+import { UserProfile, FirestoreTimestamp } from '../types';
 import { PLANS } from '../constants';
 import { cn } from '../lib/utils';
 
@@ -13,9 +13,12 @@ interface UsageDashboardProps {
   onUpgrade: () => void;
 }
 
-function computeDailyAvg(usageCount: number, createdAt: any): string {
+function computeDailyAvg(usageCount: number, createdAt: FirestoreTimestamp): string {
   try {
-    const created: Date = createdAt?.toDate ? createdAt.toDate() : new Date(createdAt);
+    const created: Date =
+      createdAt && typeof (createdAt as { toDate?: () => Date }).toDate === 'function'
+        ? (createdAt as { toDate: () => Date }).toDate()
+        : new Date(createdAt as Date | string);
     const msPerDay = 1000 * 60 * 60 * 24;
     const days = Math.max(1, Math.floor((Date.now() - created.getTime()) / msPerDay));
     return (usageCount / days).toFixed(1);
