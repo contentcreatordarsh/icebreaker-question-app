@@ -69,6 +69,86 @@ export interface UserProfile {
   bonusQuestions?: number;
 }
 
+// ── Live Session (Kahoot-style game) ────────────────────────────────────────
+
+export type SessionStatus = 'lobby' | 'writing' | 'revealing' | 'voting' | 'ended';
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+export type PlayerGender = 'male' | 'female' | 'other';
+
+export interface GamePlayer {
+  id: string;
+  name: string;
+  isHost: boolean;
+  gender?: PlayerGender;
+  avatar?: string;  // emoji character
+}
+
+export interface RevealedAnswer {
+  playerId: string;
+  name: string;
+  answer: string;
+  avatar?: string;
+}
+
+export interface LeaderboardEntry {
+  playerId: string;
+  name: string;
+  score: number;
+  avatar?: string;
+}
+
+export interface GameState {
+  status: SessionStatus;
+  roomCode: string;
+  playerId: string;
+  isHost: boolean;
+  players: GamePlayer[];
+  currentQuestion: { text: string; index: number } | null;
+  timerEndsAt: string | null;
+  answeredPlayerIds: Set<string>;
+  hasSubmitted: boolean;
+  revealedAnswers: RevealedAnswer[];
+  revealIndex: number;
+  totalAnswers: number;
+  // Voting & Leaderboard
+  votes: Record<string, number>;     // targetPlayerId -> vote count
+  hasVoted: boolean;
+  votingOpen: boolean;
+  leaderboard: LeaderboardEntry[];
+}
+
+/** Client → Server message types */
+export type GameClientMessage =
+  | { type: 'join'; name: string; hostToken?: string; gender?: PlayerGender; avatar?: string }
+  | { type: 'start_question'; text: string; timerSec?: number }
+  | { type: 'submit_answer'; answer: string }
+  | { type: 'reveal_next' }
+  | { type: 'reveal_all' }
+  | { type: 'next_question' }
+  | { type: 'end_session' }
+  | { type: 'kick'; playerId: string }
+  | { type: 'start_voting' }
+  | { type: 'cast_vote'; targetPlayerId: string }
+  | { type: 'end_voting' };
+
+/** Server → Client message types */
+export type GameServerMessage =
+  | { type: 'welcome'; playerId: string; players: GamePlayer[]; status: SessionStatus; roomCode: string; currentQuestion?: { text: string; index: number }; timerEndsAt?: string | null; answers?: RevealedAnswer[]; revealIndex?: number; leaderboard?: LeaderboardEntry[] }
+  | { type: 'player_joined'; id: string; name: string; playerCount: number; gender?: PlayerGender; avatar?: string }
+  | { type: 'player_left'; id: string; playerCount: number }
+  | { type: 'question_started'; text: string; index: number; timerEndsAt: string }
+  | { type: 'answer_received'; playerId: string; playerCount: number; answeredCount: number }
+  | { type: 'reveal'; playerId: string; name: string; answer: string; avatar?: string; revealIndex: number; totalAnswers: number }
+  | { type: 'reveal_all'; answers: RevealedAnswer[] }
+  | { type: 'phase_change'; status: SessionStatus }
+  | { type: 'timer_expired' }
+  | { type: 'error'; message: string }
+  | { type: 'session_ended' }
+  | { type: 'kicked' }
+  | { type: 'voting_started' }
+  | { type: 'vote_update'; votes: Record<string, number>; voterCount: number; totalVoters: number }
+  | { type: 'vote_result'; winnerId: string; winnerName: string; leaderboard: LeaderboardEntry[] };
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',

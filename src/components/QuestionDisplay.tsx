@@ -22,7 +22,7 @@ interface QuestionDisplayProps {
   onUpgrade: () => void;
   shuffleKey?: number;
   overrideQuestion?: DailyQuestion | null;
-  onUsageIncremented?: () => void;
+  onUsageIncremented?: (newCount?: number) => void;
 }
 
 export default function QuestionDisplay({
@@ -59,6 +59,30 @@ export default function QuestionDisplay({
     setIsDiscussed(histSnap.exists());
   }, []);
 
+  // Helper: optimistically tick the counter, then reconcile with the server.
+  const consumeAndTick = useCallback(() => {
+    // Step 1 — Optimistic local increment (instant UI feedback)
+    const optimistic = (userProfile?.usageCount ?? 0) + 1;
+    onUsageIncremented?.(optimistic);
+
+    // Step 2 — Tell the server (fire-and-reconcile)
+    authedFetch('/api/consume')
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          // Reconcile with the server's authoritative count
+          if (typeof data.usageCount === 'number') {
+            onUsageIncremented?.(data.usageCount);
+          }
+        } else {
+          console.warn('[consume] server returned', res.status);
+        }
+      })
+      .catch(err => console.warn('[consume] network error:', err));
+    // Optimistic count stays even if the call fails — the server
+    // is the real authority and will correct on next profile sync.
+  }, [userProfile?.usageCount, onUsageIncremented]);
+
   // If a question is being overridden (pack navigation, search, collections),
   // show it and consume one usage credit so the header counter ticks up.
   useEffect(() => {
@@ -68,10 +92,7 @@ export default function QuestionDisplay({
     setIsDiscussed(false);
     if (!auth.currentUser) return;
     loadInteractionState(overrideQuestion);
-    // Consume asynchronously — don't block the UI render
-    authedFetch('/api/consume')
-      .then(() => onUsageIncremented?.())
-      .catch(err => console.warn('Override consume failed:', err));
+    consumeAndTick();
   }, [overrideQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load today's daily question (cached in Firestore, generated from bank if missing).
@@ -128,14 +149,8 @@ export default function QuestionDisplay({
         // in React Strict Mode and prevents the usageCount-change loop.
         if (auth.currentUser && !consumedRef.current) {
           consumedRef.current = true;
-          try {
-            const res = await authedFetch('/api/consume');
-            // Refresh the profile — on 402 this surfaces the blur gate.
-            onUsageIncremented?.();
-            if (res.ok) await loadInteractionState(qData);
-          } catch (err) {
-            console.warn('Usage consume failed:', err);
-          }
+          consumeAndTick();
+          try { await loadInteractionState(qData); } catch { /* ok */ }
         }
       } catch (error) {
         console.error('Error fetching daily question:', error);
@@ -157,14 +172,9 @@ export default function QuestionDisplay({
     setDailyQuestion(q);
     if (auth.currentUser) {
       loadInteractionState(q);
-      try {
-        await authedFetch('/api/consume');
-        onUsageIncremented?.(); // updates the header counter (0→1→2…)
-      } catch (err) {
-        console.warn('Shuffle consume failed:', err);
-      }
+      consumeAndTick();
     }
-  }, [category, difficulty, loadInteractionState, onUsageIncremented]);
+  }, [category, difficulty, loadInteractionState, consumeAndTick]);
 
   // Surprise me: Workers AI — premium only. Gate free users to the upgrade modal.
   const handleSurprise = useCallback(async () => {

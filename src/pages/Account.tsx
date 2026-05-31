@@ -173,18 +173,32 @@ export default function Account() {
             {ADMIN_EMAILS.includes(user.email ?? '') && (
               <section className="border border-accent/20 bg-accent/5 rounded-sm px-5 py-4 space-y-3">
                 <span className="text-[10px] caps-tracking opacity-50 block">Admin tools</span>
-                <button
-                  onClick={handleResetUsage}
-                  disabled={resetting}
-                  className="inline-flex items-center gap-2 text-[11px] caps-tracking border border-brand/20 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors disabled:opacity-50"
-                >
-                  {resetting && <Loader2 size={14} className="animate-spin" />}
-                  Reset my usage counter → 0
-                </button>
+                <div className="flex flex-wrap gap-3">
+                  <Link
+                    to="/admin"
+                    className="inline-flex items-center gap-2 text-[11px] caps-tracking border border-brand/20 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors"
+                  >
+                    📊 Analytics Dashboard
+                  </Link>
+                  <button
+                    onClick={handleResetUsage}
+                    disabled={resetting}
+                    className="inline-flex items-center gap-2 text-[11px] caps-tracking border border-brand/20 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors disabled:opacity-50"
+                  >
+                    {resetting && <Loader2 size={14} className="animate-spin" />}
+                    Reset my usage counter → 0
+                  </button>
+                </div>
               </section>
             )}
 
             <section className="space-y-3">
+              <Link
+                to="/sessions"
+                className="block w-full sm:w-auto sm:inline-flex items-center justify-center gap-2 text-[11px] caps-tracking border border-brand/30 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors text-center"
+              >
+                🎲 Session History
+              </Link>
               {hasSubscription && (
                 <button
                   onClick={handleManageSubscription}
