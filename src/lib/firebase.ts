@@ -41,6 +41,17 @@ export async function authedFetch(path: string, body?: unknown): Promise<Respons
   });
 }
 
+/** Authenticated GET request. Throws if user is not signed in. */
+export async function authedGet(path: string): Promise<Response> {
+  const current = auth.currentUser;
+  if (!current) throw new Error('Not signed in');
+  const token = await current.getIdToken();
+  return fetch(path, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 async function testConnection() {
   try {
     await enableNetwork(db);

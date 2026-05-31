@@ -1,6 +1,10 @@
 import { Link } from 'react-router-dom';
-import { Heart, Zap, BookOpen, ArrowRight, Lock, Star, ChevronDown } from 'lucide-react';
-import { useState } from 'react';
+import { Heart, Zap, BookOpen, ArrowRight, Lock, Star, ChevronDown, Users, MessageSquare, Sparkles } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { motion, useInView } from 'motion/react';
+import Logo from '../components/Logo';
+import { fadeUp, staggerContainer, pop } from '../lib/animations';
+import TrustSignals from '../components/TrustSignals';
 
 interface LandingProps {
   onSignIn: () => void;
@@ -70,15 +74,24 @@ export default function Landing({ onSignIn }: LandingProps) {
     <div className="editorial-container min-h-screen">
       {/* Masthead */}
       <header className="border-b border-brand/10 px-6 py-5 md:px-12 md:py-8 w-full">
-        <div className="max-w-6xl mx-auto flex justify-between items-start">
-          <div>
-            <span className="caps-tracking opacity-30 block mb-1">Vol. I · Est. 2024</span>
-            <h1 className="font-serif text-2xl md:text-3xl italic tracking-tight">
-              Dinner Table Cards
-            </h1>
+        <div className="max-w-6xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <Logo size={36} className="text-brand" />
+            <div>
+              <span className="caps-tracking opacity-30 block text-[9px] mb-0.5">Vol. I · Est. 2024</span>
+              <h1 className="font-serif text-xl md:text-2xl italic tracking-tight">
+                Dinner Table Cards
+              </h1>
+            </div>
           </div>
-          <div className="text-right hidden sm:block">
-            <span className="caps-tracking opacity-30">{today}</span>
+          <div className="flex items-center gap-4">
+            <Link
+              to="/play"
+              className="hidden sm:inline-flex items-center gap-1.5 caps-tracking text-[10px] border border-brand/20 px-4 py-2 hover:bg-brand hover:text-paper transition-all"
+            >
+              Join Live Session
+            </Link>
+            <span className="caps-tracking opacity-30 text-[10px] hidden md:block">{today}</span>
           </div>
         </div>
       </header>
@@ -87,33 +100,51 @@ export default function Landing({ onSignIn }: LandingProps) {
 
         {/* ── Hero ─────────────────────────────────────────────────────────── */}
         <section className="py-14 md:py-20 grid md:grid-cols-2 gap-12 md:gap-16 items-center border-b border-brand/10">
-          <div>
-            <span className="caps-tracking opacity-40 mb-6 block">The Daily Provocation</span>
-            <h2 className="font-serif text-4xl sm:text-5xl md:text-6xl italic leading-[1.1] text-brand mb-6 tracking-tighter">
+          <motion.div
+            initial="hidden"
+            animate="visible"
+            variants={staggerContainer}
+          >
+            <motion.span variants={fadeUp} className="caps-tracking opacity-40 mb-6 block">
+              Turn any gathering into something memorable
+            </motion.span>
+            <motion.h2 variants={fadeUp} className="font-serif text-4xl sm:text-5xl md:text-6xl italic leading-[1.1] text-brand mb-6 tracking-tighter">
               "{heroQuestion}"
-            </h2>
-            <p className="text-brand/60 leading-relaxed mb-8 max-w-md">
-              Skip the small talk. 300+ questions curated for dinner parties, date nights, and team
-              meetings — the kind that spark stories you haven't heard before.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-3">
+            </motion.h2>
+            <motion.p variants={fadeUp} className="text-brand/60 leading-relaxed mb-8 max-w-md">
+              Skip the small talk. 600+ questions curated for dinner parties, date nights, and team
+              meetings — the kind that spark stories you haven't heard before. Host live sessions where everyone answers together.
+            </motion.p>
+            <motion.div variants={fadeUp} className="flex flex-col sm:flex-row gap-3">
               <button
                 onClick={onSignIn}
-                className="inline-flex items-center justify-center gap-2 bg-brand text-paper caps-tracking px-8 py-4 hover:bg-opacity-90 transition-all"
+                className="group inline-flex items-center justify-center gap-2 bg-brand text-paper caps-tracking px-8 py-4 hover:bg-opacity-90 transition-all shadow-lg shadow-brand/10 hover:shadow-xl hover:shadow-brand/15"
               >
-                Start Free <ArrowRight size={12} />
+                Start Free <ArrowRight size={12} className="group-hover:translate-x-0.5 transition-transform" />
               </button>
-              <a
-                href="#how-it-works"
-                className="inline-flex items-center justify-center caps-tracking px-8 py-4 border border-brand/20 hover:bg-brand/5 transition-all"
+              <Link
+                to="/play"
+                className="inline-flex items-center justify-center gap-2 caps-tracking px-8 py-4 border border-brand/20 hover:bg-brand/5 transition-all"
               >
-                See how it works
-              </a>
-            </div>
-            <p className="text-[10px] caps-tracking opacity-30 mt-4">
-              Free to start · No credit card needed · 25 questions on us
-            </p>
-          </div>
+                <Sparkles size={12} /> Join Live Session
+              </Link>
+            </motion.div>
+            {/* Trust signals */}
+            <motion.div variants={fadeUp} className="flex items-center gap-6 mt-6 pt-6 border-t border-brand/5">
+              <div className="flex items-center gap-1.5">
+                <Users size={12} className="opacity-40" />
+                <span className="text-[10px] caps-tracking opacity-40">500+ players joined</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <MessageSquare size={12} className="opacity-40" />
+                <span className="text-[10px] caps-tracking opacity-40">600+ questions</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Star size={10} className="opacity-40 fill-current" />
+                <span className="text-[10px] caps-tracking opacity-40">4.9 rating</span>
+              </div>
+            </motion.div>
+          </motion.div>
 
           {/* Sample card */}
           <div className="hidden md:block">
@@ -147,6 +178,9 @@ export default function Landing({ onSignIn }: LandingProps) {
             </div>
           </div>
         </section>
+
+        {/* ── Live Trust Signals (dynamic counters) ─────────────────────── */}
+        <TrustSignals />
 
         {/* ── How it works ─────────────────────────────────────────────────── */}
         <section id="how-it-works" className="py-14 md:py-16 border-b border-brand/10">
@@ -350,6 +384,35 @@ export default function Landing({ onSignIn }: LandingProps) {
           </div>
         </section>
 
+        {/* ── Live Session CTA ─────────────────────────────────────────────── */}
+        <section className="py-14 md:py-16 border-b border-brand/10 text-center">
+          <span className="caps-tracking opacity-40 block mb-4">New</span>
+          <h2 className="font-serif text-3xl md:text-4xl italic text-brand mb-4 leading-tight">
+            Live Sessions
+          </h2>
+          <p className="text-sm opacity-50 mb-6 max-w-md mx-auto">
+            Host a Kahoot-style round at your dinner party. Everyone answers,
+            then reveal answers one by one — the best conversations start with laughter.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center items-center">
+            <Link
+              to="/play"
+              className="inline-flex items-center gap-2 border border-brand/20 caps-tracking px-6 py-3 hover:bg-brand hover:text-paper transition-all"
+            >
+              Join a Session <ArrowRight size={12} />
+            </Link>
+            <button
+              onClick={onSignIn}
+              className="inline-flex items-center gap-2 bg-brand text-paper caps-tracking px-6 py-3 hover:bg-opacity-90 transition-all"
+            >
+              Host a Session <ArrowRight size={12} />
+            </button>
+          </div>
+          <p className="text-[10px] caps-tracking opacity-35 mt-4">
+            1 free session per week &middot; Unlimited with Premium
+          </p>
+        </section>
+
         {/* ── Final CTA ────────────────────────────────────────────────────── */}
         <section className="py-16 md:py-24 text-center">
           <span className="caps-tracking opacity-40 block mb-6">Ready to start the conversation?</span>
@@ -376,11 +439,35 @@ export default function Landing({ onSignIn }: LandingProps) {
       <footer className="border-t border-brand/10 px-6 py-8 md:px-12 w-full">
         <div className="max-w-6xl mx-auto space-y-4">
           <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
-            <p className="caps-tracking opacity-40">© {new Date().getFullYear()} Dinner Table Cards</p>
-            <div className="flex gap-6 caps-tracking opacity-40">
+            <div className="flex items-center gap-3">
+              <Logo size={24} className="text-brand opacity-50" />
+              <p className="caps-tracking opacity-40">© {new Date().getFullYear()} Dinner Table Cards</p>
+            </div>
+            <div className="flex items-center gap-6 caps-tracking opacity-40">
               <Link to="/privacy" className="hover:opacity-100 transition-opacity">Privacy</Link>
               <Link to="/terms" className="hover:opacity-100 transition-opacity">Terms</Link>
               <button onClick={onSignIn} className="hover:opacity-100 transition-opacity">Sign In</button>
+              <a
+                href="https://x.com/hegdedarsh/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:opacity-100 transition-opacity"
+                aria-label="Follow us on X (Twitter)"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                </svg>
+              </a>
+              <a
+                href="mailto:contentcreatordarsh@gmail.com"
+                className="hover:opacity-100 transition-opacity"
+                aria-label="Contact us via email"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect width="20" height="16" x="2" y="4" rx="2" />
+                  <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+                </svg>
+              </a>
             </div>
           </div>
           <p className="text-[10px] caps-tracking opacity-35 text-center sm:text-left">

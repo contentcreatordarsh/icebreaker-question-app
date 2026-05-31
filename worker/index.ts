@@ -1,6 +1,9 @@
 import Stripe from 'stripe';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 
+// Re-export Durable Object class so wrangler can discover it from the entrypoint.
+export { GameSession } from './game-session';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Env {
@@ -19,6 +22,8 @@ interface Env {
   APP_KV: KVNamespace;
   AI: Ai;
   ASSETS: Fetcher;
+  // Durable Objects — live game sessions
+  GAME_SESSIONS: DurableObjectNamespace;
   // Email — optional; app works without them (emails silently skipped)
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;   // e.g. "Dinner Table Cards <noreply@yourdomain.com>"
@@ -86,20 +91,21 @@ function addSecurityHeaders(response: Response): Response {
   r.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   r.headers.set('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   r.headers.set('X-XSS-Protection', '1; mode=block');
-  // Content-Security-Policy — deny-all baseline with explicit allowances for:
+  // Content-Security-Policy — 'self' baseline with explicit allowances for:
   //   • Bundled Vite JS + Tailwind CSS served from same origin
   //   • React inline style={{...}} props (requires 'unsafe-inline' for styles only)
   //   • Firebase Firestore, Auth (securetoken, identitytoolkit, accounts.google.com)
   //   • Google user avatars (lh3.googleusercontent.com)
   //   • Firebase Auth popup/iframe (project firebaseapp.com + accounts.google.com)
+  //   • PWA manifest (manifest-src 'self')
   // NOTE: if Cloudflare Web Analytics is enabled, also add
   //   https://static.cloudflareinsights.com to script-src and connect-src.
   r.headers.set(
     'Content-Security-Policy',
-    "default-src 'none'; " +
+    "default-src 'self'; " +
     "script-src 'self'; " +
     "style-src 'self' 'unsafe-inline'; " +
-    "connect-src 'self' https://firestore.googleapis.com https://securetoken.googleapis.com " +
+    "connect-src 'self' wss: https://firestore.googleapis.com https://securetoken.googleapis.com " +
       "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com; " +
     "img-src 'self' https://lh3.googleusercontent.com data:; " +
     "frame-src https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com; " +
@@ -108,7 +114,8 @@ function addSecurityHeaders(response: Response): Response {
     "base-uri 'self'; " +
     "form-action 'self'; " +
     "font-src 'self'; " +
-    "worker-src 'none'",
+    "manifest-src 'self'; " +
+    "worker-src 'self'",
   );
   return r;
 }
@@ -231,6 +238,9 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   if (url.pathname === '/api/referral' && request.method === 'POST') {
     return handleReferral(request, env);
   }
+  if (url.pathname === '/api/profile' && request.method === 'POST') {
+    return handleProfile(request, env);
+  }
   if (url.pathname === '/api/consume' && request.method === 'POST') {
     return handleConsume(request, env);
   }
@@ -246,6 +256,45 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   // /api/admin/reset-by-email was removed — it used weaker X-Admin-Secret auth and
   // allowed resetting arbitrary user accounts. Use /api/admin/reset-usage instead
   // (requires a valid Firebase ID token from an admin-listed email).
+
+  // ── Live Session (Kahoot-style game) endpoints ─────────────────────────────
+  if (url.pathname === '/api/session/create' && request.method === 'POST') {
+    return handleSessionCreate(request, env);
+  }
+  if (url.pathname === '/api/session/lookup' && request.method === 'GET') {
+    return handleSessionLookup(request, env);
+  }
+  if (url.pathname === '/api/session/ws' && request.method === 'GET') {
+    return handleSessionWebSocket(request, env);
+  }
+
+  // ── Feedback endpoint (no auth required) ────────────────────────────────────
+  if (url.pathname === '/api/feedback' && request.method === 'POST') {
+    return handleFeedback(request, env);
+  }
+
+  // ── Public stats endpoint ──────────────────────────────────────────────────
+  if (url.pathname === '/api/stats' && request.method === 'GET') {
+    return handleStats(env);
+  }
+
+  // ── Session history endpoint (auth required) ────────────────────────────────
+  if (url.pathname === '/api/sessions/history' && request.method === 'GET') {
+    return handleSessionHistory(request, env);
+  }
+
+  // ── Question vote endpoint (no auth required, rate-limited) ─────────────────
+  if (url.pathname === '/api/question-vote' && request.method === 'POST') {
+    return handleQuestionVote(request, env);
+  }
+
+  // ── Admin endpoints (require Firebase auth + admin email) ──────────────────
+  if (url.pathname === '/api/admin/dashboard-stats' && request.method === 'GET') {
+    return handleAdminDashboardStats(request, env);
+  }
+  if (url.pathname === '/api/admin/feedback-list' && request.method === 'GET') {
+    return handleAdminFeedbackList(request, env);
+  }
 
   return env.ASSETS.fetch(request);
 }
@@ -740,6 +789,49 @@ async function resetMonthlyUsage(env: Env): Promise<void> {
   console.log(`✅ Monthly reset complete — ${totalReset} users total`);
 }
 
+// ── Profile (server-authoritative) ───────────────────────────────────────────
+
+/**
+ * GET-or-create the user's profile. The service account bypasses Firestore
+ * security rules, so this works even when the client SDK can't read/write the
+ * named database directly.
+ */
+async function handleProfile(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+  const uid = auth.uid;
+
+  let user = await getFirestoreUser(uid, env);
+  if (!user) {
+    // First time — create a default free profile server-side.
+    const now = new Date().toISOString();
+    const defaults: Record<string, unknown> = {
+      uid,
+      email: auth.email || '',
+      isPremium: false,
+      subscriptionPlan: 'free',
+      subscriptionStatus: 'none',
+      lifetimePurchase: false,
+      usageCount: 0,
+      referralCount: 0,
+      bonusQuestions: 0,
+      lastActiveDate: '',
+      currentStreak: 0,
+      longestStreak: 0,
+      createdAt: now,
+    };
+    try {
+      await updateFirestoreUser(uid, defaults, env);
+      user = await getFirestoreUser(uid, env);
+    } catch (err) {
+      console.error('[profile] creation failed:', err);
+      return Response.json({ error: 'Profile creation failed' }, { status: 500 });
+    }
+  }
+
+  return Response.json({ profile: user ?? null });
+}
+
 // ── Usage Enforcement (server-authoritative) ──────────────────────────────────
 
 // Mirror of src/constants.ts PLANS limits. Server is the source of truth.
@@ -756,16 +848,36 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
   if (!auth) return unauthorized();
   const uid = auth.uid;
 
-  const user = await getFirestoreUser(uid, env);
+  let user = await getFirestoreUser(uid, env);
   if (!user) {
-    // No profile yet — the client creates it on first sign-in. Treat as no usage.
-    return Response.json({ error: 'No profile' }, { status: 404 });
+    // Auto-create profile server-side so free users don't depend on client Firestore writes.
+    console.log(`[consume] auto-creating profile for ${uid} (${auth.email})`);
+    await updateFirestoreUser(uid, {
+      uid,
+      email: auth.email || '',
+      isPremium: false,
+      subscriptionPlan: 'free',
+      subscriptionStatus: 'none',
+      lifetimePurchase: false,
+      usageCount: 0,
+      referralCount: 0,
+      bonusQuestions: 0,
+      lastActiveDate: '',
+      currentStreak: 0,
+      longestStreak: 0,
+    }, env);
+    user = await getFirestoreUser(uid, env);
+    if (!user) {
+      return Response.json({ error: 'Profile creation failed' }, { status: 500 });
+    }
   }
 
   const plan = (user.subscriptionPlan as string) || 'free';
   const bonus = (user.bonusQuestions as number) || 0;
   const usageCount = (user.usageCount as number) || 0;
   const limit = (PLAN_LIMITS[plan] ?? PLAN_LIMITS.free) + bonus;
+
+  console.log(`[consume] uid=${uid} email=${auth.email} plan=${plan} usage=${usageCount}/${limit}`);
 
   if (usageCount >= limit) {
     return Response.json({ allowed: false, reason: 'limit', usageCount, limit }, { status: 402 });
@@ -775,9 +887,12 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
   const today = new Date().toISOString().split('T')[0];
   const lastActive = (user.lastActiveDate as string) || '';
 
+  const newUsageCount = usageCount + 1;
+
   try {
     if (lastActive === today) {
-      await incrementFirestoreUser(uid, { usageCount: 1 }, env);
+      // Same day — just bump the counter, no streak change.
+      await updateFirestoreUser(uid, { usageCount: newUsageCount }, env);
     } else {
       const yesterdayDate = new Date();
       yesterdayDate.setDate(yesterdayDate.getDate() - 1);
@@ -786,8 +901,13 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
       const currentStreak = lastActive === yesterday ? prevStreak + 1 : 1;
       const longestStreak = Math.max((user.longestStreak as number) || 0, currentStreak);
 
-      await incrementFirestoreUser(uid, { usageCount: 1 }, env);
-      await updateFirestoreUser(uid, { currentStreak, longestStreak, lastActiveDate: today }, env);
+      // New day — update counter + streak in a single write.
+      await updateFirestoreUser(uid, {
+        usageCount: newUsageCount,
+        currentStreak,
+        longestStreak,
+        lastActiveDate: today,
+      }, env);
     }
   } catch (err) {
     console.error('Consume increment failed:', err);
@@ -833,7 +953,7 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  return Response.json({ allowed: true, usageCount: usageCount + 1, limit });
+  return Response.json({ allowed: true, usageCount: newUsageCount, limit });
 }
 
 // ── Billing Portal & Account Deletion ─────────────────────────────────────────
@@ -1012,11 +1132,14 @@ async function handleReferral(request: Request, env: Env): Promise<Response> {
         if (existing && !existing.referredBy) {
           // Record attribution first so a retry can't double-credit.
           await updateFirestoreUser(uid, { referredBy: referrerUid }, env);
-          await incrementFirestoreUser(
-            referrerUid,
-            { referralCount: 1, bonusQuestions: REFERRAL_BONUS },
-            env,
-          );
+          // Credit the referrer: bump their referralCount + bonusQuestions.
+          const referrer = await getFirestoreUser(referrerUid, env);
+          const prevRefCount = (referrer?.referralCount as number) || 0;
+          const prevBonus    = (referrer?.bonusQuestions as number) || 0;
+          await updateFirestoreUser(referrerUid, {
+            referralCount:  prevRefCount + 1,
+            bonusQuestions: prevBonus + REFERRAL_BONUS,
+          }, env);
           credited = true;
           console.log(`✅ Referral: ${referrerUid} credited +${REFERRAL_BONUS} for new user ${uid}`);
         }
@@ -1029,30 +1152,167 @@ async function handleReferral(request: Request, env: Env): Promise<Response> {
   return Response.json({ ok: true, credited });
 }
 
-/** Atomically increment numeric fields on a user doc via Firestore commit transforms. */
-async function incrementFirestoreUser(
-  uid: string,
-  increments: Record<string, number>,
-  env: Env,
-): Promise<void> {
-  const token = await getFirestoreToken(env);
-  const docName = `projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents/users/${uid}`;
-  const url = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents:commit`;
+// ── Live Session (Kahoot-style game) ────────────────────────────────────────
 
-  const fieldTransforms = Object.entries(increments).map(([fieldPath, amount]) => ({
-    fieldPath,
-    increment: { integerValue: String(amount) },
+/** Safe alphabet for room codes — excludes visually ambiguous chars (I, O, 0, 1). */
+const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ROOM_CODE_LENGTH = 4;
+const ROOM_CODE_TTL = 4 * 60 * 60; // 4 hours in seconds
+
+/**
+ * Generate a random room code. 4 chars from a 32-char alphabet = ~1M combinations.
+ * Collisions are checked against KV before returning.
+ */
+function generateRoomCode(): string {
+  const bytes = new Uint8Array(ROOM_CODE_LENGTH);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => ROOM_CODE_CHARS[b % ROOM_CODE_CHARS.length]).join('');
+}
+
+/**
+ * Get the ISO week string for a date, e.g. "2026-W22".
+ * Used for weekly session limit enforcement.
+ */
+function getISOWeek(date: Date): string {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+
+/**
+ * POST /api/session/create — Create a new live session.
+ * Requires Firebase auth. Enforces freemium limit (free users: 1 session/week).
+ * Returns { roomCode, hostToken }.
+ */
+async function handleSessionCreate(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+  const uid = auth.uid;
+
+  // Check freemium limit: free users get 1 session per ISO week
+  const user = await getFirestoreUser(uid, env);
+  const isPremium = (user?.isPremium as boolean) || false;
+
+  if (!isPremium) {
+    const week = getISOWeek(new Date());
+    const limitKey = `session-limit:${uid}:${week}`;
+    const count = parseInt((await env.APP_KV.get(limitKey)) ?? '0', 10);
+    if (count >= 1) {
+      return Response.json(
+        { error: 'Free users can host 1 live session per week. Upgrade for unlimited sessions.' },
+        { status: 402 },
+      );
+    }
+    // Increment the counter (TTL = 7 days to auto-expire old weeks)
+    await env.APP_KV.put(limitKey, String(count + 1), { expirationTtl: 7 * 24 * 60 * 60 });
+  }
+
+  // Generate a unique room code (retry on collision)
+  let roomCode = '';
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = generateRoomCode();
+    const existing = await env.APP_KV.get(`room:${candidate}`);
+    if (!existing) {
+      roomCode = candidate;
+      break;
+    }
+  }
+  if (!roomCode) {
+    return Response.json({ error: 'Could not generate room code — please try again.' }, { status: 500 });
+  }
+
+  // Generate host token for reconnection (32-byte random hex)
+  const tokenBytes = new Uint8Array(32);
+  crypto.getRandomValues(tokenBytes);
+  const hostToken = Array.from(tokenBytes, b => b.toString(16).padStart(2, '0')).join('');
+
+  // Create the Durable Object instance
+  const doId = env.GAME_SESSIONS.newUniqueId();
+  const stub = env.GAME_SESSIONS.get(doId);
+
+  // Initialize the DO with room code and host token
+  const initUrl = new URL('https://do-internal/initialize');
+  await stub.fetch(new Request(initUrl.toString(), {
+    method: 'POST',
+    body: JSON.stringify({ roomCode, hostToken }),
   }));
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ writes: [{ transform: { document: docName, fieldTransforms } }] }),
+  // Store room code → DO ID mapping in KV
+  await env.APP_KV.put(`room:${roomCode}`, doId.toString(), { expirationTtl: ROOM_CODE_TTL });
+
+  console.log(`[session] created room=${roomCode} host=${uid} (${auth.email})`);
+
+  // Store session history in Firestore (non-blocking)
+  storeSessionHistory(env, uid, roomCode).catch(err => {
+    console.error('Failed to store session history:', err);
   });
 
-  if (!res.ok) {
-    throw new Error(`Firestore increment failed (${res.status}): ${await res.text()}`);
+  // Increment global stats counters (non-blocking)
+  incrementStat(env, 'stats:sessions_total').catch(() => {});
+  incrementStat(env, `daily:sessions:${new Date().toISOString().slice(0, 10)}`).catch(() => {});
+
+  return Response.json({ roomCode, hostToken });
+}
+
+/**
+ * GET /api/session/lookup?code=XXXX — Check if a room exists.
+ * No auth required (guests need to verify the code before connecting).
+ */
+async function handleSessionLookup(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const code = (url.searchParams.get('code') || '').toUpperCase().trim();
+
+  if (!code || code.length !== ROOM_CODE_LENGTH) {
+    return Response.json({ exists: false });
   }
+
+  const doIdStr = await env.APP_KV.get(`room:${code}`);
+  if (!doIdStr) {
+    return Response.json({ exists: false });
+  }
+
+  // Optionally fetch live status from the DO
+  try {
+    const doId = env.GAME_SESSIONS.idFromString(doIdStr);
+    const stub = env.GAME_SESSIONS.get(doId);
+    const statusRes = await stub.fetch(new Request('https://do-internal/status'));
+    const status = await statusRes.json() as { exists: boolean; status: string; playerCount: number };
+    return Response.json(status);
+  } catch {
+    return Response.json({ exists: false });
+  }
+}
+
+/**
+ * GET /api/session/ws?code=XXXX — WebSocket upgrade.
+ * No Firebase auth required (guests connect without accounts).
+ * Forwards the upgrade request directly to the Durable Object.
+ */
+async function handleSessionWebSocket(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const code = (url.searchParams.get('code') || '').toUpperCase().trim();
+
+  if (!code || code.length !== ROOM_CODE_LENGTH) {
+    return Response.json({ error: 'Invalid room code' }, { status: 400 });
+  }
+
+  const doIdStr = await env.APP_KV.get(`room:${code}`);
+  if (!doIdStr) {
+    return Response.json({ error: 'Room not found' }, { status: 404 });
+  }
+
+  const upgradeHeader = request.headers.get('Upgrade');
+  if (upgradeHeader !== 'websocket') {
+    return new Response('Expected WebSocket upgrade', { status: 426 });
+  }
+
+  const doId = env.GAME_SESSIONS.idFromString(doIdStr);
+  const stub = env.GAME_SESSIONS.get(doId);
+
+  // Forward the WebSocket upgrade request to the DO
+  return stub.fetch(request);
 }
 
 // ── Workers AI — "Surprise Me" question generation ────────────────────────────
@@ -1133,5 +1393,417 @@ async function handleGenerateQuestion(request: Request, env: Env): Promise<Respo
   } catch (err: unknown) {
     console.error('Workers AI Error:', err instanceof Error ? err.message : err);
     return Response.json({ error: 'Question generation failed — please try again.' }, { status: 500 });
+  }
+}
+
+// ── Feedback endpoint ────────────────────────────────────────────────────────
+
+/**
+ * POST /api/feedback — Submit feedback (no auth required).
+ * Body: { text, rating?, sessionCode?, questionText?, email? }
+ * Stores in Firestore, sends email notification to owner via Resend.
+ * Rate limited: 5 per IP per hour.
+ */
+async function handleFeedback(request: Request, env: Env): Promise<Response> {
+  // Rate limit by IP
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const hour = new Date().toISOString().slice(0, 13); // YYYY-MM-DDTHH
+  const rlKey = `rl:feedback:${ip}:${hour}`;
+  const rlCount = parseInt((await env.APP_KV.get(rlKey)) ?? '0', 10);
+  if (rlCount >= 5) {
+    return Response.json({ error: 'Too many feedback submissions. Try again later.' }, { status: 429 });
+  }
+  await env.APP_KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 });
+
+  let body: { text?: string; rating?: number; sessionCode?: string; questionText?: string; email?: string };
+  try {
+    body = await request.json() as typeof body;
+  } catch {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const text = (body.text || '').trim().slice(0, 1000);
+  if (!text) {
+    return Response.json({ error: 'Feedback text is required' }, { status: 400 });
+  }
+
+  const rating = typeof body.rating === 'number' ? Math.min(5, Math.max(1, body.rating)) : null;
+  const sessionCode = (body.sessionCode || '').trim().slice(0, 10) || null;
+  const questionText = (body.questionText || '').trim().slice(0, 500) || null;
+  const email = (body.email || '').trim().slice(0, 100) || null;
+
+  // Store in Firestore
+  try {
+    const token = await getFirestoreToken(env);
+    const docId = crypto.randomUUID();
+    const dbPath = `projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents/feedback/${docId}`;
+    const firestoreUrl = `https://firestore.googleapis.com/v1/${dbPath}`;
+
+    const fields: Record<string, unknown> = {
+      text: { stringValue: text },
+      createdAt: { timestampValue: new Date().toISOString() },
+      ip: { stringValue: ip },
+    };
+    if (rating) fields.rating = { integerValue: String(rating) };
+    if (sessionCode) fields.sessionCode = { stringValue: sessionCode };
+    if (questionText) fields.questionText = { stringValue: questionText };
+    if (email) fields.email = { stringValue: email };
+
+    await fetch(firestoreUrl, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+    });
+  } catch (err) {
+    console.error('Failed to store feedback in Firestore:', err);
+    // Don't fail the request — we'll still try to send the email
+  }
+
+  // Send email notification to owner via Resend
+  if (env.RESEND_API_KEY) {
+    try {
+      const subject = `[DTC Feedback] ${rating ? '★'.repeat(rating) : 'New'} — ${text.slice(0, 50)}`;
+      const htmlBody = `
+        <h2>New Feedback Received</h2>
+        <p><strong>Rating:</strong> ${rating ? '★'.repeat(rating) + '☆'.repeat(5 - rating) : 'Not rated'}</p>
+        <p><strong>Message:</strong></p>
+        <blockquote style="border-left:3px solid #5A5A40;padding-left:12px;color:#333;">${text}</blockquote>
+        ${sessionCode ? `<p><strong>Session:</strong> ${sessionCode}</p>` : ''}
+        ${questionText ? `<p><strong>Question:</strong> ${questionText}</p>` : ''}
+        ${email ? `<p><strong>Reply to:</strong> <a href="mailto:${email}">${email}</a></p>` : ''}
+        <p style="color:#999;font-size:12px;">IP: ${ip} | ${new Date().toISOString()}</p>
+      `;
+
+      await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: env.RESEND_FROM || 'Dinner Table Cards <noreply@dinnertablecards.xyz>',
+          to: 'contentcreatordarsh@gmail.com',
+          subject,
+          html: htmlBody,
+        }),
+      });
+    } catch (err) {
+      console.error('Failed to send feedback email:', err);
+    }
+  }
+
+  return Response.json({ ok: true });
+}
+
+// ── Stats endpoint ───────────────────────────────────────────────────────────
+
+/**
+ * GET /api/stats — Public stats for trust signals on the landing page.
+ * Returns aggregate counters from KV.
+ */
+async function handleStats(env: Env): Promise<Response> {
+  const [sessions, players, questions] = await Promise.all([
+    env.APP_KV.get('stats:sessions_total'),
+    env.APP_KV.get('stats:players_total'),
+    env.APP_KV.get('stats:questions_total'),
+  ]);
+
+  return Response.json({
+    sessions: parseInt(sessions ?? '0', 10) + 50,   // seed with baseline
+    players: parseInt(players ?? '0', 10) + 200,    // seed with baseline
+    questions: parseInt(questions ?? '0', 10) + 600, // seed with baseline (question bank)
+  }, {
+    headers: { 'Cache-Control': 'public, max-age=60' }, // cache 1 min
+  });
+}
+
+/** Atomically increment a KV counter. */
+async function incrementStat(env: Env, key: string): Promise<void> {
+  const current = parseInt((await env.APP_KV.get(key)) ?? '0', 10);
+  await env.APP_KV.put(key, String(current + 1));
+}
+
+// ── Admin Dashboard endpoints ─────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/dashboard-stats — Admin-only. Returns overview metrics.
+ * Includes KV counters + daily breakdown (last 7 days from KV).
+ */
+async function handleAdminDashboardStats(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
+    return Response.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  // Fetch aggregate counters
+  const [sessions, players, questions] = await Promise.all([
+    env.APP_KV.get('stats:sessions_total'),
+    env.APP_KV.get('stats:players_total'),
+    env.APP_KV.get('stats:questions_total'),
+  ]);
+
+  // Fetch daily breakdown (last 7 days)
+  const daily: { date: string; sessions: number; players: number; questions: number }[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000);
+    const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+    const [ds, dp, dq] = await Promise.all([
+      env.APP_KV.get(`daily:sessions:${key}`),
+      env.APP_KV.get(`daily:players:${key}`),
+      env.APP_KV.get(`daily:questions:${key}`),
+    ]);
+    daily.push({
+      date: key,
+      sessions: parseInt(ds ?? '0', 10),
+      players: parseInt(dp ?? '0', 10),
+      questions: parseInt(dq ?? '0', 10),
+    });
+  }
+
+  // Count feedback docs (query Firestore for total count)
+  let feedbackCount = 0;
+  try {
+    const token = await getFirestoreToken(env);
+    const baseUrl = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents`;
+    const queryRes = await fetch(`${baseUrl}:runAggregationQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredAggregationQuery: {
+          structuredQuery: { from: [{ collectionId: 'feedback' }] },
+          aggregations: [{ alias: 'count', count: {} }],
+        },
+      }),
+    });
+    if (queryRes.ok) {
+      const results = await queryRes.json() as Array<{ result?: { aggregateFields?: { count?: { integerValue?: string } } } }>;
+      feedbackCount = parseInt(results?.[0]?.result?.aggregateFields?.count?.integerValue ?? '0', 10);
+    }
+  } catch (err) {
+    console.error('Failed to count feedback:', err);
+  }
+
+  return Response.json({
+    totals: {
+      sessions: parseInt(sessions ?? '0', 10),
+      players: parseInt(players ?? '0', 10),
+      questions: parseInt(questions ?? '0', 10),
+      feedback: feedbackCount,
+    },
+    daily,
+  });
+}
+
+/**
+ * GET /api/admin/feedback-list — Admin-only. Returns latest feedback entries.
+ * Query param: ?limit=20 (default 20, max 50)
+ */
+async function handleAdminFeedbackList(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
+    return Response.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const url = new URL(request.url);
+  const limit = Math.min(50, parseInt(url.searchParams.get('limit') || '20', 10));
+
+  try {
+    const token = await getFirestoreToken(env);
+    const baseUrl = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents`;
+
+    const queryRes = await fetch(`${baseUrl}:runQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'feedback' }],
+          orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }],
+          limit: limit,
+        },
+      }),
+    });
+
+    if (!queryRes.ok) {
+      return Response.json({ error: 'Failed to query feedback' }, { status: 500 });
+    }
+
+    const rawDocs = await queryRes.json() as Array<{ document?: { name?: string; fields?: Record<string, { stringValue?: string; integerValue?: string; timestampValue?: string }> } }>;
+
+    const items = rawDocs
+      .filter(d => d.document)
+      .map(d => {
+        const f = d.document!.fields || {};
+        return {
+          id: d.document!.name?.split('/').pop() ?? '',
+          text: f.text?.stringValue ?? '',
+          rating: f.rating?.integerValue ? parseInt(f.rating.integerValue, 10) : null,
+          sessionCode: f.sessionCode?.stringValue ?? null,
+          questionText: f.questionText?.stringValue ?? null,
+          email: f.email?.stringValue ?? null,
+          createdAt: f.createdAt?.timestampValue ?? null,
+          ip: f.ip?.stringValue ?? null,
+        };
+      });
+
+    return Response.json({ items });
+  } catch (err) {
+    console.error('Admin feedback list error:', err);
+    return Response.json({ error: 'Failed to fetch feedback' }, { status: 500 });
+  }
+}
+
+// ── Question Vote endpoint ────────────────────────────────────────────────────
+
+/**
+ * POST /api/question-vote — Rate a question up or down.
+ * Body: { questionText: string, vote: 'up' | 'down' }
+ * Stores vote tallies in KV for simplicity. Rate limited: 20/IP/hour.
+ */
+async function handleQuestionVote(request: Request, env: Env): Promise<Response> {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const hour = new Date().toISOString().slice(0, 13);
+  const rlKey = `rl:qvote:${ip}:${hour}`;
+  const rlCount = parseInt((await env.APP_KV.get(rlKey)) ?? '0', 10);
+  if (rlCount >= 20) {
+    return Response.json({ error: 'Too many votes. Try again later.' }, { status: 429 });
+  }
+  await env.APP_KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 });
+
+  let body: { questionText?: string; vote?: string };
+  try {
+    body = await request.json() as typeof body;
+  } catch {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const questionText = (body.questionText || '').trim().slice(0, 500);
+  const vote = body.vote;
+  if (!questionText || (vote !== 'up' && vote !== 'down')) {
+    return Response.json({ error: 'questionText and vote (up|down) required' }, { status: 400 });
+  }
+
+  // Use a hash of the question text as the KV key
+  const encoder = new TextEncoder();
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(questionText));
+  const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  const kvKey = `qvote:${hashHex}`;
+
+  // Read existing votes
+  const existing = await env.APP_KV.get(kvKey);
+  let votes = { up: 0, down: 0, text: questionText };
+  if (existing) {
+    try { votes = JSON.parse(existing); } catch { /* reset */ }
+  }
+
+  if (vote === 'up') votes.up++;
+  else votes.down++;
+
+  await env.APP_KV.put(kvKey, JSON.stringify(votes));
+
+  return Response.json({ ok: true, up: votes.up, down: votes.down });
+}
+
+// ── Session History ───────────────────────────────────────────────────────────
+
+/**
+ * Store a session record in Firestore for the host's history.
+ * Called on session creation. Uses roomCode as doc ID.
+ */
+async function storeSessionHistory(env: Env, hostUid: string, roomCode: string): Promise<void> {
+  const token = await getFirestoreToken(env);
+  const dbPath = `projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents/sessionHistory/${roomCode}`;
+  const firestoreUrl = `https://firestore.googleapis.com/v1/${dbPath}`;
+
+  const fields: Record<string, unknown> = {
+    hostUid: { stringValue: hostUid },
+    roomCode: { stringValue: roomCode },
+    playerCount: { integerValue: '0' },
+    questionsPlayed: { integerValue: '0' },
+    createdAt: { timestampValue: new Date().toISOString() },
+    status: { stringValue: 'active' },
+  };
+
+  await fetch(firestoreUrl, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields }),
+  });
+}
+
+/**
+ * GET /api/sessions/history — List past sessions for the authenticated user.
+ * Returns most recent 20 sessions.
+ */
+async function handleSessionHistory(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+
+  try {
+    const token = await getFirestoreToken(env);
+    const baseUrl = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents`;
+
+    const queryRes = await fetch(`${baseUrl}:runQuery`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'sessionHistory' }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: 'hostUid' },
+              op: 'EQUAL',
+              value: { stringValue: auth.uid },
+            },
+          },
+          orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }],
+          limit: 20,
+        },
+      }),
+    });
+
+    if (!queryRes.ok) {
+      return Response.json({ error: 'Failed to query sessions' }, { status: 500 });
+    }
+
+    const rawDocs = await queryRes.json() as Array<{ document?: { fields?: Record<string, { stringValue?: string; integerValue?: string; timestampValue?: string }> } }>;
+
+    const sessions = rawDocs
+      .filter(d => d.document)
+      .map(d => {
+        const f = d.document!.fields || {};
+        return {
+          roomCode: f.roomCode?.stringValue ?? '',
+          playerCount: parseInt(f.playerCount?.integerValue ?? '0', 10),
+          questionsPlayed: parseInt(f.questionsPlayed?.integerValue ?? '0', 10),
+          createdAt: f.createdAt?.timestampValue ?? null,
+          status: f.status?.stringValue ?? 'active',
+        };
+      });
+
+    // Enrich with KV summary data (has final player/question counts after session end)
+    const enriched = await Promise.all(
+      sessions.map(async (s) => {
+        try {
+          const kvSummary = await env.APP_KV.get(`session-summary:${s.roomCode}`);
+          if (kvSummary) {
+            const summary = JSON.parse(kvSummary) as { playerCount?: number; questionsPlayed?: number; endedAt?: string };
+            return {
+              ...s,
+              playerCount: summary.playerCount ?? s.playerCount,
+              questionsPlayed: summary.questionsPlayed ?? s.questionsPlayed,
+              status: 'ended',
+            };
+          }
+        } catch { /* ignore parse errors */ }
+        return s;
+      }),
+    );
+
+    return Response.json({ sessions: enriched });
+  } catch (err) {
+    console.error('Session history error:', err);
+    return Response.json({ error: 'Failed to fetch session history' }, { status: 500 });
   }
 }

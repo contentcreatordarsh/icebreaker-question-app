@@ -28,6 +28,24 @@ binding = "AI"
 binding = "APP_KV"
 id = "82aa3336b53041068bf461968d0397c8"
 
+# Durable Objects — live game sessions (Kahoot-style multiplayer)
+[durable_objects]
+bindings = [
+  { name = "GAME_SESSIONS", class_name = "GameSession" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["GameSession"]
+
+# Observability — enable Worker logs in the Cloudflare dashboard
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 # Cron — reset monthly usageCount for active subscribers on the 1st of each month
 [triggers]
 crons = ["0 0 1 * *"]

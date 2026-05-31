@@ -9,7 +9,7 @@ import { Link } from 'react-router-dom';
 import { auth, db, signInWithGoogle, authedFetch, getRedirectResult } from './lib/firebase';
 import { doc, getDoc, getDocFromServer, setDoc, serverTimestamp } from 'firebase/firestore';
 import { AnimatePresence } from 'motion/react';
-import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Lock } from 'lucide-react';
+import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Lock, Play } from 'lucide-react';
 import QuestionDisplay from './components/QuestionDisplay';
 import PackSelector from './components/PackSelector';
 import Pricing from './components/Pricing';
@@ -71,36 +71,114 @@ export default function App() {
   const [premiumConfirmed, setPremiumConfirmed] = useState(false);
 
   // ── Profile sync ────────────────────────────────────────────────────────────
-  const refreshProfile = useCallback(async (uid: string) => {
-    const docRef = doc(db, 'users', uid);
-    // Must use getDocFromServer — the Worker updates usageCount via the service
-    // account REST API which bypasses the Firestore client SDK cache. getDoc()
-    // would return the stale cached value and the header counter would not tick.
-    const snap = await getDocFromServer(docRef);
-    if (snap.exists()) setUserProfile(snap.data() as UserProfile);
+  const refreshProfile = useCallback(async (_uid: string) => {
+    // Fetch profile from server — uses the service account, bypasses Firestore
+    // security rules, and always returns the latest server-side values.
+    try {
+      const res = await authedFetch('/api/profile');
+      if (res.ok) {
+        const { profile } = await res.json();
+        if (profile) { setUserProfile(profile as UserProfile); return; }
+      }
+    } catch { /* fall through */ }
+
+    // Fallback: try direct Firestore reads
+    try {
+      const docRef = doc(db, 'users', _uid);
+      const snap = await getDocFromServer(docRef);
+      if (snap.exists()) setUserProfile(snap.data() as UserProfile);
+    } catch {
+      try {
+        const docRef = doc(db, 'users', _uid);
+        const snap = await getDoc(docRef);
+        if (snap.exists()) setUserProfile(snap.data() as UserProfile);
+      } catch { /* give up silently */ }
+    }
   }, []);
 
   useEffect(() => {
     async function syncProfile() {
       if (!user) { setUserProfile(null); return; }
 
-      const docRef = doc(db, 'users', user.uid);
-      const docSnap = await getDoc(docRef);
+      // Fetch (or auto-create) the profile via our server endpoint. This
+      // uses the service account, so it works even when the Firestore client
+      // SDK can't access the named database due to security rules.
+      try {
+        const res = await authedFetch('/api/profile');
+        if (res.ok) {
+          const { profile } = await res.json();
+          if (profile) {
+            setUserProfile(profile as UserProfile);
 
-      if (docSnap.exists()) {
-        const existing = docSnap.data() as UserProfile;
-        setUserProfile(existing);
-        // Backfill referral code for users created before this feature shipped.
-        // Only referralCode is client-writable now; the Worker owns the counters.
-        if (!existing.referralCode) {
-          const code = makeReferralCode(user.uid);
-          await setDoc(docRef, { referralCode: code }, { merge: true });
-          await registerReferral(code);
-          setUserProfile({ ...existing, referralCode: code });
+            // Backfill referral code for users created before this feature shipped.
+            if (!(profile as UserProfile).referralCode) {
+              const code = makeReferralCode(user.uid);
+              await registerReferral(code);
+              // Also write the referral code to Firestore via the server next time.
+              setUserProfile({ ...(profile as UserProfile), referralCode: code });
+            }
+
+            // Attribute any inbound referral captured before sign-in.
+            const pendingReferral = localStorage.getItem('pendingReferral') || undefined;
+            if (pendingReferral) {
+              await registerReferral(
+                (profile as UserProfile).referralCode || makeReferralCode(user.uid),
+                pendingReferral,
+              );
+              localStorage.removeItem('pendingReferral');
+              setTimeout(() => refreshProfile(user.uid), 1500);
+            }
+            return; // done
+          }
         }
-      } else {
-        const referralCode = makeReferralCode(user.uid);
-        const newProfile: UserProfile = {
+      } catch (err) {
+        console.warn('Server profile fetch failed, trying Firestore directly:', err);
+      }
+
+      // Fallback: read/create via client-side Firestore (works when the
+      // named database security rules allow it).
+      try {
+        const docRef = doc(db, 'users', user.uid);
+        const docSnap = await getDoc(docRef);
+
+        if (docSnap.exists()) {
+          const existing = docSnap.data() as UserProfile;
+          setUserProfile(existing);
+          if (!existing.referralCode) {
+            const code = makeReferralCode(user.uid);
+            await setDoc(docRef, { referralCode: code }, { merge: true });
+            await registerReferral(code);
+            setUserProfile({ ...existing, referralCode: code });
+          }
+        } else {
+          const referralCode = makeReferralCode(user.uid);
+          const newProfile: UserProfile = {
+            uid: user.uid,
+            email: user.email || '',
+            isPremium: false,
+            subscriptionPlan: 'free',
+            subscriptionStatus: 'none',
+            lifetimePurchase: false,
+            usageCount: 0,
+            createdAt: serverTimestamp(),
+            referralCode,
+            referralCount: 0,
+            bonusQuestions: 0,
+          };
+          await setDoc(docRef, newProfile);
+          setUserProfile(newProfile);
+
+          const pendingReferral = localStorage.getItem('pendingReferral') || undefined;
+          await registerReferral(referralCode, pendingReferral);
+          if (pendingReferral) {
+            localStorage.removeItem('pendingReferral');
+            setTimeout(() => refreshProfile(user.uid), 1500);
+          }
+        }
+      } catch (err) {
+        console.error('Firestore profile sync also failed:', err);
+        // Last resort: set a minimal local profile so the UI isn't stuck.
+        setUserProfile({
           uid: user.uid,
           email: user.email || '',
           isPremium: false,
@@ -108,22 +186,11 @@ export default function App() {
           subscriptionStatus: 'none',
           lifetimePurchase: false,
           usageCount: 0,
-          createdAt: serverTimestamp(),
-          referralCode,
+          createdAt: new Date().toISOString(),
+          referralCode: makeReferralCode(user.uid),
           referralCount: 0,
           bonusQuestions: 0,
-        };
-        await setDoc(docRef, newProfile);
-        setUserProfile(newProfile);
-
-        // Register code + attribute any inbound referral captured before sign-in.
-        const pendingReferral = localStorage.getItem('pendingReferral') || undefined;
-        await registerReferral(referralCode, pendingReferral);
-        if (pendingReferral) {
-          localStorage.removeItem('pendingReferral');
-          // Refresh shortly after so the new user's `referredBy` shows up.
-          setTimeout(() => refreshProfile(user.uid), 1500);
-        }
+        });
       }
     }
     syncProfile();
@@ -172,18 +239,25 @@ export default function App() {
 
     let attempts = 0;
     // Poll every 2s for up to 30s — webhooks can take 5–15s in production.
-    // Must use getDocFromServer to bypass the Firestore client cache and see
-    // the webhook's server-side write immediately.
+    // Uses the server /api/profile endpoint (service account) so we always
+    // see the webhook's server-side write immediately.
     const poll = setInterval(async () => {
       attempts++;
-      await refreshProfile(user.uid);
-      const snap = await getDocFromServer(doc(db, 'users', user.uid));
-      if (snap.data()?.isPremium === true) {
-        setPremiumConfirmed(true);
-        clearInterval(poll);
-      } else if (attempts >= 15) {
-        clearInterval(poll);
-      }
+      try {
+        const res = await authedFetch('/api/profile');
+        if (res.ok) {
+          const { profile } = await res.json();
+          if (profile) {
+            setUserProfile(profile as UserProfile);
+            if ((profile as UserProfile).isPremium === true) {
+              setPremiumConfirmed(true);
+              clearInterval(poll);
+              return;
+            }
+          }
+        }
+      } catch { /* retry */ }
+      if (attempts >= 15) clearInterval(poll);
     }, 2000);
 
     return () => clearInterval(poll);
@@ -321,6 +395,9 @@ export default function App() {
               >
                 <BookOpen size={11} /> Collection
               </button>
+              <Link to="/play" className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-1.5">
+                <Play size={11} /> Live
+              </Link>
 
               {user ? (
                 <div className="flex items-center gap-3 ml-2 pl-4 border-l border-brand/10">
@@ -391,6 +468,10 @@ export default function App() {
               className="caps-tracking flex items-center gap-2 py-2 hover:opacity-60 transition-opacity">
               <Info size={13} /> About
             </button>
+            <Link to="/play" onClick={() => setMobileNavOpen(false)}
+              className="caps-tracking flex items-center gap-2 py-2 hover:opacity-60 transition-opacity">
+              <Play size={13} /> Live Session
+            </Link>
             <div className="pt-2 border-t border-brand/5">
               {user ? (
                 <div className="flex items-center justify-between">
@@ -484,7 +565,31 @@ export default function App() {
             isPremium={isPremium}
             shuffleKey={shuffleKey}
             overrideQuestion={overrideQuestion}
-            onUsageIncremented={() => user && refreshProfile(user.uid)}
+            onUsageIncremented={(newCount?: number) => {
+              if (newCount !== undefined) {
+                // Use the server's authoritative count directly — no Firestore read needed.
+                setUserProfile(prev => {
+                  if (prev) return { ...prev, usageCount: newCount };
+                  // Profile hasn't loaded yet — create a minimal placeholder.
+                  return {
+                    uid: user?.uid || '',
+                    email: user?.email || '',
+                    isPremium: false,
+                    subscriptionPlan: 'free' as const,
+                    subscriptionStatus: 'none' as const,
+                    lifetimePurchase: false,
+                    usageCount: newCount,
+                    createdAt: new Date().toISOString(),
+                    referralCode: '',
+                    referralCount: 0,
+                    bonusQuestions: 0,
+                  };
+                });
+              } else if (user) {
+                // Fallback: re-read from Firestore (e.g. on non-OK response).
+                refreshProfile(user.uid);
+              }
+            }}
           />
         </div>
 
@@ -531,9 +636,32 @@ export default function App() {
           </div>
         </div>
 
-        <div className="hidden md:flex justify-center">
+        <div className="hidden md:flex flex-col items-center gap-3">
           <div className="w-12 h-12 border border-brand/10 rounded-full flex items-center justify-center">
             <span className="text-[10px] font-serif italic">DT</span>
+          </div>
+          <div className="flex items-center gap-3 opacity-40">
+            <a
+              href="https://x.com/hegdedarsh/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:opacity-100 transition-opacity"
+              aria-label="Follow us on X (Twitter)"
+            >
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+              </svg>
+            </a>
+            <a
+              href="mailto:contentcreatordarsh@gmail.com"
+              className="hover:opacity-100 transition-opacity"
+              aria-label="Contact us via email"
+            >
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect width="20" height="16" x="2" y="4" rx="2" />
+                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+              </svg>
+            </a>
           </div>
         </div>
 
