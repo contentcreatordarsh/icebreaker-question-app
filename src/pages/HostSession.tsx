@@ -8,6 +8,7 @@ import PlayerList from '../components/game/PlayerList';
 import AnswerCard from '../components/game/AnswerCard';
 import ShareResults from '../components/game/ShareResults';
 import QuestionVote from '../components/game/QuestionVote';
+import GameErrorBoundary from '../components/game/GameErrorBoundary';
 import { cn } from '../lib/utils';
 import type { Category } from '../types';
 
@@ -235,7 +236,7 @@ export default function HostSession() {
                   const isUsed = usedQuestions.has(q);
                   return (
                     <button
-                      key={i}
+                      key={q}
                       onClick={() => handleStartQuestion(q)}
                       disabled={isUsed}
                       className={cn(
@@ -381,14 +382,16 @@ export default function HostSession() {
       {/* Revealed answers */}
       <div className="flex-1 px-6 py-6">
         <div className="mx-auto max-w-lg space-y-4">
-          {gameState.revealedAnswers.map((ans, i) => (
-            <AnswerCard
-              key={ans.playerId}
-              answer={ans}
-              index={i}
-              isNew={i === gameState.revealedAnswers.length - 1}
-            />
-          ))}
+          <GameErrorBoundary fallbackMessage="Could not display answers.">
+            {gameState.revealedAnswers.map((ans, i) => (
+              <AnswerCard
+                key={ans.playerId}
+                answer={ans}
+                index={i}
+                isNew={i === gameState.revealedAnswers.length - 1}
+              />
+            ))}
+          </GameErrorBoundary>
 
           {gameState.revealedAnswers.length === 0 && (
             <p className="text-center text-sm italic text-[#1A1A1A]/40" style={{ fontFamily: 'Georgia, serif' }}>

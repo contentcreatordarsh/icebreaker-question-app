@@ -13,6 +13,7 @@ import FeedbackModal from '../components/FeedbackModal';
 import ShareResults from '../components/game/ShareResults';
 import QuestionVote from '../components/game/QuestionVote';
 import SoundToggle from '../components/game/SoundToggle';
+import GameErrorBoundary from '../components/game/GameErrorBoundary';
 import { cn } from '../lib/utils';
 import type { PlayerGender } from '../types';
 
@@ -52,10 +53,25 @@ export default function PlaySession() {
     enabled: !!roomCode && !!playerName,
   });
 
-  // Sound effects on state transitions
+  // Reset answer state when a new question starts
+  const questionRef = useRef(gameState.currentQuestion?.text);
+  useEffect(() => {
+    if (gameState.currentQuestion?.text && gameState.currentQuestion.text !== questionRef.current) {
+      setAnswer('');
+      setSubmitted(false);
+      questionRef.current = gameState.currentQuestion.text;
+    }
+  }, [gameState.currentQuestion?.text]);
+
+  // Sound effects on state transitions (skip initial mount)
+  const mountedRef = useRef(false);
   const prevStatusRef = useRef(gameState.status);
   const prevRevealCountRef = useRef(gameState.revealedAnswers.length);
   useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
     if (prevStatusRef.current !== gameState.status) {
       if (gameState.status === 'revealing') playSound('reveal');
       if (gameState.status === 'ended') playSound('win');
@@ -108,7 +124,9 @@ export default function PlaySession() {
         </p>
 
         <div className="mb-4 w-full max-w-xs">
+          <label htmlFor="join-name" className="sr-only">Your Name</label>
           <input
+            id="join-name"
             type="text"
             maxLength={30}
             value={nameInput}
@@ -194,7 +212,9 @@ export default function PlaySession() {
           {/* Leaderboard on session end */}
           {gameState.status === 'ended' && gameState.leaderboard.length > 0 && (
             <div className="mb-6">
-              <Leaderboard entries={gameState.leaderboard} currentPlayerId={gameState.playerId} />
+              <GameErrorBoundary fallbackMessage="Could not display leaderboard.">
+                <Leaderboard entries={gameState.leaderboard} currentPlayerId={gameState.playerId} />
+              </GameErrorBoundary>
             </div>
           )}
 
@@ -289,7 +309,9 @@ export default function PlaySession() {
             </div>
           ) : (
             <div className="w-full max-w-md">
+              <label htmlFor="answer-input" className="sr-only">Your answer</label>
               <textarea
+                id="answer-input"
                 value={answer}
                 onChange={e => setAnswer(e.target.value)}
                 maxLength={500}
@@ -357,18 +379,20 @@ export default function PlaySession() {
                 ✓ Vote cast! Waiting for others...
               </p>
             )}
-            {gameState.revealedAnswers.map((ans) => (
-              <VotingCard
-                key={ans.playerId}
-                answer={ans}
-                voteCount={gameState.votes[ans.playerId] || 0}
-                hasVoted={gameState.hasVoted}
-                isSelf={ans.playerId === gameState.playerId}
-                onVote={() => {
-                  actions.castVote(ans.playerId);
-                }}
-              />
-            ))}
+            <GameErrorBoundary fallbackMessage="Could not display voting cards.">
+              {gameState.revealedAnswers.map((ans) => (
+                <VotingCard
+                  key={ans.playerId}
+                  answer={ans}
+                  voteCount={gameState.votes[ans.playerId] || 0}
+                  hasVoted={gameState.hasVoted}
+                  isSelf={ans.playerId === gameState.playerId}
+                  onVote={() => {
+                    actions.castVote(ans.playerId);
+                  }}
+                />
+              ))}
+            </GameErrorBoundary>
           </div>
         </div>
 
@@ -411,14 +435,16 @@ export default function PlaySession() {
       {/* Revealed answers */}
       <div className="flex-1 px-6 py-6">
         <div className="mx-auto max-w-lg space-y-4">
-          {gameState.revealedAnswers.map((ans, i) => (
-            <AnswerCard
-              key={ans.playerId}
-              answer={ans}
-              index={i}
-              isNew={i === gameState.revealedAnswers.length - 1}
-            />
-          ))}
+          <GameErrorBoundary fallbackMessage="Could not display answers.">
+            {gameState.revealedAnswers.map((ans, i) => (
+              <AnswerCard
+                key={ans.playerId}
+                answer={ans}
+                index={i}
+                isNew={i === gameState.revealedAnswers.length - 1}
+              />
+            ))}
+          </GameErrorBoundary>
 
           {gameState.revealedAnswers.length === 0 && (
             <p className="text-center text-sm italic text-[#1A1A1A]/40" style={{ fontFamily: 'Georgia, serif' }}>

@@ -30,8 +30,10 @@ interface Env {
   // (ADMIN_SECRET removed — admin routes now require a Firebase ID token from an admin email)
 }
 
-// Module-level token cache — survives across requests in the same Worker isolate
+// Module-level token cache — survives across requests in the same Worker isolate.
+// pendingRefresh coalesces concurrent token refreshes into one API call.
 let cachedFirestoreToken: { token: string; expiresAt: number } | null = null;
+let pendingRefresh: Promise<string> | null = null;
 
 // Firebase ID-token verification: Google's public JWKS for securetoken.
 // createRemoteJWKSet caches keys and refreshes them as needed.
@@ -98,15 +100,15 @@ function addSecurityHeaders(response: Response): Response {
   //   • Google user avatars (lh3.googleusercontent.com)
   //   • Firebase Auth popup/iframe (project firebaseapp.com + accounts.google.com)
   //   • PWA manifest (manifest-src 'self')
-  // NOTE: if Cloudflare Web Analytics is enabled, also add
-  //   https://static.cloudflareinsights.com to script-src and connect-src.
+  // Cloudflare Web Analytics is allowed in CSP (beacon script + connect for reporting).
   r.headers.set(
     'Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self'; " +
+    "script-src 'self' https://static.cloudflareinsights.com; " +
     "style-src 'self' 'unsafe-inline'; " +
     "connect-src 'self' wss: https://firestore.googleapis.com https://securetoken.googleapis.com " +
-      "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com; " +
+      "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com " +
+      "https://cloudflareinsights.com; " +
     "img-src 'self' https://lh3.googleusercontent.com data:; " +
     "frame-src https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com; " +
     "frame-ancestors 'none'; " +
@@ -550,6 +552,18 @@ async function getFirestoreToken(env: Env): Promise<string> {
     return cachedFirestoreToken.token;
   }
 
+  // Coalesce concurrent refreshes into one API call
+  if (pendingRefresh) return pendingRefresh;
+
+  pendingRefresh = performTokenRefresh(env).finally(() => {
+    pendingRefresh = null;
+  });
+  return pendingRefresh;
+}
+
+/** Internal: actually refresh the Firestore access token via service account JWT. */
+async function performTokenRefresh(env: Env): Promise<string> {
+  const now = Date.now();
   const iat = Math.floor(now / 1000);
   const exp = iat + 3600;
 
@@ -851,7 +865,7 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
   let user = await getFirestoreUser(uid, env);
   if (!user) {
     // Auto-create profile server-side so free users don't depend on client Firestore writes.
-    console.log(`[consume] auto-creating profile for ${uid} (${auth.email})`);
+    console.log(`[consume] auto-creating profile for uid=${uid}`);
     await updateFirestoreUser(uid, {
       uid,
       email: auth.email || '',
@@ -877,7 +891,7 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
   const usageCount = (user.usageCount as number) || 0;
   const limit = (PLAN_LIMITS[plan] ?? PLAN_LIMITS.free) + bonus;
 
-  console.log(`[consume] uid=${uid} email=${auth.email} plan=${plan} usage=${usageCount}/${limit}`);
+  console.log(`[consume] uid=${uid} plan=${plan} usage=${usageCount}/${limit}`);
 
   if (usageCount >= limit) {
     return Response.json({ allowed: false, reason: 'limit', usageCount, limit }, { status: 402 });
@@ -1163,8 +1177,8 @@ const ROOM_CODE_TTL = 4 * 60 * 60; // 4 hours in seconds
  * Generate a random room code. 4 chars from a 32-char alphabet = ~1M combinations.
  * Collisions are checked against KV before returning.
  */
-function generateRoomCode(): string {
-  const bytes = new Uint8Array(ROOM_CODE_LENGTH);
+function generateRoomCode(length: number = ROOM_CODE_LENGTH): string {
+  const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, b => ROOM_CODE_CHARS[b % ROOM_CODE_CHARS.length]).join('');
 }
@@ -1209,14 +1223,26 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
     await env.APP_KV.put(limitKey, String(count + 1), { expirationTtl: 7 * 24 * 60 * 60 });
   }
 
-  // Generate a unique room code (retry on collision)
+  // Generate a unique room code (retry on collision).
+  // Try 10 times with standard 4-char codes, then fall back to 5-char codes.
   let roomCode = '';
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const candidate = generateRoomCode();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const candidate = generateRoomCode(ROOM_CODE_LENGTH);
     const existing = await env.APP_KV.get(`room:${candidate}`);
     if (!existing) {
       roomCode = candidate;
       break;
+    }
+  }
+  if (!roomCode) {
+    // Fallback: try 5-character codes (32^5 = ~33M combinations)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = generateRoomCode(ROOM_CODE_LENGTH + 1);
+      const existing = await env.APP_KV.get(`room:${candidate}`);
+      if (!existing) {
+        roomCode = candidate;
+        break;
+      }
     }
   }
   if (!roomCode) {
@@ -1242,7 +1268,7 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
   // Store room code → DO ID mapping in KV
   await env.APP_KV.put(`room:${roomCode}`, doId.toString(), { expirationTtl: ROOM_CODE_TTL });
 
-  console.log(`[session] created room=${roomCode} host=${uid} (${auth.email})`);
+  console.log(`[session] created room=${roomCode} host=${uid}`);
 
   // Store session history in Firestore (non-blocking)
   storeSessionHistory(env, uid, roomCode).catch(err => {
@@ -1261,10 +1287,20 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
  * No auth required (guests need to verify the code before connecting).
  */
 async function handleSessionLookup(request: Request, env: Env): Promise<Response> {
+  // Rate limit: 10 lookups per IP per minute (prevents room code brute-force)
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const minute = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
+  const rlKey = `rl:lookup:${ip}:${minute}`;
+  const rlCount = parseInt((await env.APP_KV.get(rlKey)) ?? '0', 10);
+  if (rlCount >= 10) {
+    return Response.json({ error: 'Too many lookups. Try again in a minute.' }, { status: 429 });
+  }
+  await env.APP_KV.put(rlKey, String(rlCount + 1), { expirationTtl: 120 });
+
   const url = new URL(request.url);
   const code = (url.searchParams.get('code') || '').toUpperCase().trim();
 
-  if (!code || code.length !== ROOM_CODE_LENGTH) {
+  if (!code || code.length < ROOM_CODE_LENGTH || code.length > ROOM_CODE_LENGTH + 1) {
     return Response.json({ exists: false });
   }
 
@@ -1294,7 +1330,7 @@ async function handleSessionWebSocket(request: Request, env: Env): Promise<Respo
   const url = new URL(request.url);
   const code = (url.searchParams.get('code') || '').toUpperCase().trim();
 
-  if (!code || code.length !== ROOM_CODE_LENGTH) {
+  if (!code || code.length < ROOM_CODE_LENGTH || code.length > ROOM_CODE_LENGTH + 1) {
     return Response.json({ error: 'Invalid room code' }, { status: 400 });
   }
 
@@ -1517,7 +1553,12 @@ async function handleStats(env: Env): Promise<Response> {
   });
 }
 
-/** Atomically increment a KV counter. */
+/**
+ * Increment a KV counter.
+ * NOTE: KV does not support atomic CAS — concurrent requests can lose increments.
+ * Acceptable for approximate analytics counters; rate-limit checks use conservative
+ * thresholds to compensate (see individual rate-limit callsites).
+ */
 async function incrementStat(env: Env, key: string): Promise<void> {
   const current = parseInt((await env.APP_KV.get(key)) ?? '0', 10);
   await env.APP_KV.put(key, String(current + 1));

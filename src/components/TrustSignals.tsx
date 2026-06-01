@@ -43,13 +43,16 @@ export default function TrustSignals() {
   const [stats, setStats] = useState<{ sessions: number; players: number; questions: number } | null>(null);
 
   useEffect(() => {
-    fetch('/api/stats')
+    const controller = new AbortController();
+    fetch('/api/stats', { signal: controller.signal })
       .then(r => r.json())
       .then(data => setStats(data as typeof stats))
-      .catch(() => {
+      .catch(err => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         // Fallback stats if API fails
         setStats({ sessions: 50, players: 200, questions: 600 });
       });
+    return () => controller.abort();
   }, []);
 
   if (!stats) return null;
@@ -75,7 +78,7 @@ export default function TrustSignals() {
               <AnimatedCounter target={item.value} />
               {item.suffix}
             </p>
-            <p className="text-[10px] uppercase tracking-wider text-[#1A1A1A]/40">
+            <p className="text-[10px] uppercase tracking-wider text-[#1A1A1A]/60">
               {item.label}
             </p>
           </div>

@@ -254,6 +254,7 @@ export function useGameSocket({
 
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
+  const cleanupListenersRef = useRef<(() => void) | null>(null);
   const maxRetries = 3;
 
   // Send a typed message over the WebSocket
@@ -281,7 +282,7 @@ export function useGameSocket({
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
-      ws.addEventListener('open', () => {
+      const onOpen = () => {
         if (cancelled) { ws.close(); return; }
         dispatch({ type: 'SET_CONNECTION', status: 'connected' });
         retriesRef.current = 0;
@@ -292,9 +293,9 @@ export function useGameSocket({
         if (gender) (joinMsg as any).gender = gender;
         if (avatar) (joinMsg as any).avatar = avatar;
         ws.send(JSON.stringify(joinMsg));
-      });
+      };
 
-      ws.addEventListener('message', (event) => {
+      const onMessage = (event: MessageEvent) => {
         if (cancelled) return;
         try {
           const msg = JSON.parse(event.data as string) as GameServerMessage;
@@ -305,9 +306,9 @@ export function useGameSocket({
         } catch {
           console.warn('[useGameSocket] Failed to parse message:', event.data);
         }
-      });
+      };
 
-      ws.addEventListener('close', (event) => {
+      const onClose = (event: CloseEvent) => {
         if (cancelled) return;
         wsRef.current = null;
 
@@ -327,11 +328,24 @@ export function useGameSocket({
           dispatch({ type: 'SET_CONNECTION', status: 'error' });
           dispatch({ type: 'SET_ERROR', message: 'Connection lost. Please refresh to rejoin.' });
         }
-      });
+      };
 
-      ws.addEventListener('error', () => {
+      const onError = () => {
         // The close event will fire after this, triggering reconnect logic
-      });
+      };
+
+      ws.addEventListener('open', onOpen);
+      ws.addEventListener('message', onMessage);
+      ws.addEventListener('close', onClose);
+      ws.addEventListener('error', onError);
+
+      // Store cleanup for this WebSocket instance
+      cleanupListenersRef.current = () => {
+        ws.removeEventListener('open', onOpen);
+        ws.removeEventListener('message', onMessage);
+        ws.removeEventListener('close', onClose);
+        ws.removeEventListener('error', onError);
+      };
     }
 
     connect();
@@ -339,6 +353,7 @@ export function useGameSocket({
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (cleanupListenersRef.current) cleanupListenersRef.current();
       const ws = wsRef.current;
       if (ws) {
         ws.close(1000, 'Component unmounted');

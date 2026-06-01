@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
+import OfflineIndicator from './components/OfflineIndicator.tsx';
 import './index.css';
 
 // Register the Workbox service worker via vite-plugin-pwa's auto-update module.
@@ -27,6 +28,7 @@ const SessionHistory = lazy(() => import('./pages/SessionHistory.tsx'));
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
+      <OfflineIndicator />
       <BrowserRouter>
         <Suspense fallback={<div className="min-h-screen bg-[#F5F5F0]" />}>
           <Routes>

@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { motion } from 'motion/react';
 import type { RevealedAnswer } from '../../types';
 import { cn } from '../../lib/utils';
@@ -24,7 +25,7 @@ const CARD_COLORS = [
  * A single revealed answer card with a spring entrance animation.
  * Uses framer-motion for smooth, staggered reveal.
  */
-export default function AnswerCard({ answer, index, isNew, className }: AnswerCardProps) {
+const AnswerCard = memo(function AnswerCard({ answer, index, isNew, className }: AnswerCardProps) {
   const colorClass = CARD_COLORS[index % CARD_COLORS.length];
 
   return (
@@ -57,4 +58,6 @@ export default function AnswerCard({ answer, index, isNew, className }: AnswerCa
       </div>
     </motion.div>
   );
-}
+});
+
+export default AnswerCard;

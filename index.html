@@ -33,7 +33,7 @@
     <meta name="twitter:description" content="Beautiful question cards for meaningful conversations. Icebreakers, deep talk, team building — curated &amp; ready." />
     <meta name="twitter:image" content="https://dinnertablecards.xyz/og-image.svg" />
 
-    <!-- JSON-LD structured data -->
+    <!-- JSON-LD structured data: WebApplication -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -49,19 +49,60 @@
       }
     }
     </script>
+
+    <!-- JSON-LD structured data: FAQ (enables rich snippets in Google search) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What happens when I hit 25 free questions?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "You'll see an upgrade prompt. There's no expiry — your saved favorites stay yours forever."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I cancel my subscription anytime?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Two clicks from your account page. No dark patterns, no retention flow, no guilt."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What's the difference between Light and Deep questions?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Light questions are playful and low-stakes — great for groups still warming up. Deep questions go further: values, regrets, hopes. Both are in every category."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Will I see the same questions twice?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Occasionally — the archive has 600+ questions, but popular categories cycle. Premium unlocks the full depth so repeats are rare."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it work without internet?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Once the app loads, it works offline. Questions are cached in your browser automatically — no internet needed mid-dinner."
+          }
+        }
+      ]
+    }
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-
-    <!--
-      Cloudflare Web Analytics (privacy-first, cookieless — no cookie banner needed).
-      Enable Web Analytics for this site in the Cloudflare dashboard, then replace
-      YOUR_CF_BEACON_TOKEN below with the generated token and uncomment the script.
-    -->
-    <!--
-    <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
-            data-cf-beacon='{"token": "YOUR_CF_BEACON_TOKEN"}'></script>
-    -->
+    <!-- Cloudflare Web Analytics: active via "Automatic setup" (injected at edge). -->
   </body>
 </html>

@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 
 /**
  * Lightweight sound effects via Web Audio API (no external files needed).
@@ -7,6 +7,25 @@ import { useCallback, useRef } from 'react';
  */
 export function useSoundEffects() {
   const ctxRef = useRef<AudioContext | null>(null);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  // Clear all pending timers on unmount
+  useEffect(() => {
+    return () => {
+      for (const t of timersRef.current) clearTimeout(t);
+      timersRef.current = [];
+    };
+  }, []);
+
+  /** Schedule a delayed callback and track the timer for cleanup. */
+  const scheduleTimeout = useCallback((fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      fn();
+      // Remove from tracking list after it fires
+      timersRef.current = timersRef.current.filter(t => t !== id);
+    }, ms);
+    timersRef.current.push(id);
+  }, []);
 
   const getContext = useCallback(() => {
     if (!ctxRef.current) {
@@ -48,7 +67,7 @@ export function useSoundEffects() {
       case 'join':
         // Soft rising chime
         playTone(523, 0.15, 'sine', 0.1);
-        setTimeout(() => playTone(659, 0.2, 'sine', 0.12), 100);
+        scheduleTimeout(() => playTone(659, 0.2, 'sine', 0.12), 100);
         break;
       case 'submit':
         // Quick confirmation blip
@@ -57,7 +76,7 @@ export function useSoundEffects() {
       case 'reveal':
         // Gentle pop
         playTone(440, 0.08, 'triangle', 0.12);
-        setTimeout(() => playTone(660, 0.12, 'triangle', 0.1), 60);
+        scheduleTimeout(() => playTone(660, 0.12, 'triangle', 0.1), 60);
         break;
       case 'vote':
         // Soft click
@@ -66,15 +85,15 @@ export function useSoundEffects() {
       case 'win':
         // Celebratory ascending notes
         playTone(523, 0.15, 'sine', 0.12);
-        setTimeout(() => playTone(659, 0.15, 'sine', 0.12), 120);
-        setTimeout(() => playTone(784, 0.25, 'sine', 0.14), 240);
+        scheduleTimeout(() => playTone(659, 0.15, 'sine', 0.12), 120);
+        scheduleTimeout(() => playTone(784, 0.25, 'sine', 0.14), 240);
         break;
       case 'tick':
         // Subtle tick for timer
         playTone(1000, 0.03, 'square', 0.03);
         break;
     }
-  }, [playTone]);
+  }, [playTone, scheduleTimeout]);
 
   const toggleMute = useCallback(() => {
     const current = localStorage.getItem('dtc-sound-muted') === 'true';

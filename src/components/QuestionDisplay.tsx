@@ -43,6 +43,7 @@ export default function QuestionDisplay({
   const [showShareCard, setShowShareCard] = useState(false);
   const [surpriseLoading, setSurpriseLoading] = useState(false);
   const [surpriseError, setSurpriseError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   // Guard: prevent the consumption loop caused by usageCount changing after /api/consume
   // fires onUsageIncremented, which refreshes the profile, which would re-run the effect.
   const consumedRef = useRef(false);
@@ -249,6 +250,8 @@ export default function QuestionDisplay({
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `users/${auth.currentUser.uid}/favorites/${dailyQuestion.questionId}`);
+      setActionError('Could not save favorite. Please try again.');
+      setTimeout(() => setActionError(null), 4000);
     }
   };
 
@@ -260,6 +263,8 @@ export default function QuestionDisplay({
       setIsDiscussed(true);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `users/${auth.currentUser.uid}/history/${dailyQuestion.questionId}`);
+      setActionError('Could not mark as discussed. Please try again.');
+      setTimeout(() => setActionError(null), 4000);
     }
   };
 
@@ -453,6 +458,13 @@ export default function QuestionDisplay({
 
             {!auth.currentUser && (
               <p className="text-[10px] caps-tracking opacity-30">Sign in to save progress</p>
+            )}
+
+            {/* Action error toast — favorite/discuss failures */}
+            {actionError && (
+              <p className="text-[10px] caps-tracking text-red-600/80 max-w-xs text-center">
+                {actionError}
+              </p>
             )}
 
             {/* Surprise Me error — rate limit or generation failure */}

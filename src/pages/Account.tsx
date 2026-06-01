@@ -164,6 +164,18 @@ export default function Account() {
                   {(profile?.usageCount ?? 0)} / {plan.limit + (profile?.bonusQuestions ?? 0)}
                 </span>
               </div>
+              {/* Streak info */}
+              {((profile?.currentStreak ?? 0) > 0 || (profile?.longestStreak ?? 0) > 0) && (
+                <div className="flex justify-between items-baseline border-b border-brand/10 pb-3">
+                  <span className="text-[11px] caps-tracking opacity-40">Streak</span>
+                  <span className="text-sm">
+                    🔥 {profile?.currentStreak ?? 0} day{(profile?.currentStreak ?? 0) !== 1 ? 's' : ''}
+                    {(profile?.longestStreak ?? 0) > (profile?.currentStreak ?? 0) && (
+                      <span className="opacity-40 ml-2">· best: {profile?.longestStreak}</span>
+                    )}
+                  </span>
+                </div>
+              )}
             </section>
 
             {error && <p className="text-sm text-red-700">{error}</p>}
