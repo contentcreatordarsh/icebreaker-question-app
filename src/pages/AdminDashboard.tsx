@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { ChevronLeft, RefreshCw, Users, Zap, MessageSquare, Star, TrendingUp } from 'lucide-react';
@@ -250,7 +250,7 @@ function DailyChart({ data }: { data: DashboardStats['daily'] }) {
   );
 }
 
-function FeedbackRow({ item }: { item: FeedbackItem }) {
+const FeedbackRow = React.memo(function FeedbackRow({ item }: { item: FeedbackItem }) {
   return (
     <div className="rounded-lg border border-[#1A1A1A]/5 p-4 transition-colors hover:bg-[#1A1A1A]/[0.02]">
       <div className="mb-2 flex items-start justify-between gap-4">
@@ -276,4 +276,4 @@ function FeedbackRow({ item }: { item: FeedbackItem }) {
       )}
     </div>
   );
-}
+});

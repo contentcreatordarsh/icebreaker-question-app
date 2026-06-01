@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { Link } from 'react-router-dom';
 import { auth, db, signInWithGoogle, authedFetch, getRedirectResult } from './lib/firebase';
@@ -12,13 +12,16 @@ import { AnimatePresence } from 'motion/react';
 import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Lock, Play } from 'lucide-react';
 import QuestionDisplay from './components/QuestionDisplay';
 import PackSelector from './components/PackSelector';
-import Pricing from './components/Pricing';
-import SearchOverlay from './components/SearchOverlay';
-import AboutOverlay from './components/AboutOverlay';
-import UsageDashboard from './components/UsageDashboard';
-import UserCollections from './components/UserCollections';
 import PaymentSuccessBanner from './components/PaymentSuccessBanner';
 import OnboardingToast from './components/OnboardingToast';
+
+// Lazy-load overlay/modal components — they're behind user interaction and
+// not needed on first paint. Keeps the initial bundle small.
+const Pricing = lazy(() => import('./components/Pricing'));
+const SearchOverlay = lazy(() => import('./components/SearchOverlay'));
+const AboutOverlay = lazy(() => import('./components/AboutOverlay'));
+const UsageDashboard = lazy(() => import('./components/UsageDashboard'));
+const UserCollections = lazy(() => import('./components/UserCollections'));
 import { Category, Difficulty, UserProfile, DailyQuestion, PREMIUM_CATEGORIES, QuestionPack } from './types';
 import { QUESTION_PACKS } from './data/packs';
 import { PLANS } from './constants';
@@ -345,6 +348,14 @@ export default function App() {
 
   return (
     <div className="editorial-container">
+      {/* Skip-to-content link — visible only on keyboard focus */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-brand focus:px-4 focus:py-2 focus:text-paper focus:text-xs"
+      >
+        Skip to content
+      </a>
+
       {/* Payment success banner */}
       <AnimatePresence>
         {showPaymentBanner && (
@@ -382,7 +393,7 @@ export default function App() {
             <span className="caps-tracking">
               {new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' })}
             </span>
-            <div className="flex items-center gap-4 mt-2">
+            <nav aria-label="Main navigation" className="flex items-center gap-4 mt-2">
               <button onClick={() => setShowAbout(true)} className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-1.5">
                 <Info size={11} /> About
               </button>
@@ -432,7 +443,7 @@ export default function App() {
               {userProfile?.isPremium && (
                 <span className="caps-tracking bg-accent/10 py-1 px-3 rounded-sm text-[10px]">Premium</span>
               )}
-            </div>
+            </nav>
           </div>
 
           {/* Mobile: right side — user avatar + hamburger */}
@@ -492,7 +503,7 @@ export default function App() {
         )}
       </header>
 
-      <main className="flex-grow flex flex-col py-12 max-w-7xl mx-auto w-full">
+      <main id="main-content" className="flex-grow flex flex-col py-12 max-w-7xl mx-auto w-full">
         {/* Category Selector */}
         <div className="flex justify-center flex-wrap gap-x-5 gap-y-4 mb-16 px-4 md:px-8">
           {categories.map((cat) => {
@@ -605,9 +616,11 @@ export default function App() {
                 {showPricing ? 'Continue Dialogue' : 'Unlock the complete archive of over 3,000 provocations'}
               </button>
 
-              <AnimatePresence>
-                {showPricing && <Pricing onSuccess={() => setShowPricing(false)} />}
-              </AnimatePresence>
+              <Suspense fallback={null}>
+                <AnimatePresence>
+                  {showPricing && <Pricing onSuccess={() => setShowPricing(false)} />}
+                </AnimatePresence>
+              </Suspense>
             </div>
           )}
         </div>
@@ -685,29 +698,31 @@ export default function App() {
         }
       />
 
-      {/* Overlays */}
-      <AnimatePresence>
-        {showCollections && (
-          <UserCollections
-            onClose={() => setShowCollections(false)}
-            onSelectQuestion={handleSelectQuestion}
-          />
-        )}
-        {showSearch && (
-          <SearchOverlay
-            onClose={() => setShowSearch(false)}
-            onSelectQuestion={handleSelectQuestion}
-          />
-        )}
-        {showAbout && <AboutOverlay onClose={() => setShowAbout(false)} />}
-        {showUsageDashboard && userProfile && (
-          <UsageDashboard
-            userProfile={userProfile}
-            onClose={() => setShowUsageDashboard(false)}
-            onUpgrade={() => { setShowUsageDashboard(false); setShowPricing(true); }}
-          />
-        )}
-      </AnimatePresence>
+      {/* Overlays — lazy-loaded, wrapped in Suspense */}
+      <Suspense fallback={null}>
+        <AnimatePresence>
+          {showCollections && (
+            <UserCollections
+              onClose={() => setShowCollections(false)}
+              onSelectQuestion={handleSelectQuestion}
+            />
+          )}
+          {showSearch && (
+            <SearchOverlay
+              onClose={() => setShowSearch(false)}
+              onSelectQuestion={handleSelectQuestion}
+            />
+          )}
+          {showAbout && <AboutOverlay onClose={() => setShowAbout(false)} />}
+          {showUsageDashboard && userProfile && (
+            <UsageDashboard
+              userProfile={userProfile}
+              onClose={() => setShowUsageDashboard(false)}
+              onUpgrade={() => { setShowUsageDashboard(false); setShowPricing(true); }}
+            />
+          )}
+        </AnimatePresence>
+      </Suspense>
     </div>
   );
 }

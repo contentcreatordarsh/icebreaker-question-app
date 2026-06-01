@@ -72,6 +72,14 @@ export default function Landing({ onSignIn }: LandingProps) {
 
   return (
     <div className="editorial-container min-h-screen">
+      {/* Skip-to-content link — visible only on keyboard focus */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-brand focus:px-4 focus:py-2 focus:text-paper focus:text-xs"
+      >
+        Skip to content
+      </a>
+
       {/* Masthead */}
       <header className="border-b border-brand/10 px-6 py-5 md:px-12 md:py-8 w-full">
         <div className="max-w-6xl mx-auto flex justify-between items-center">
@@ -96,7 +104,7 @@ export default function Landing({ onSignIn }: LandingProps) {
         </div>
       </header>
 
-      <main className="flex-grow w-full max-w-6xl mx-auto px-6 md:px-12">
+      <main id="main-content" className="flex-grow w-full max-w-6xl mx-auto px-6 md:px-12">
 
         {/* ── Hero ─────────────────────────────────────────────────────────── */}
         <section className="py-14 md:py-20 grid md:grid-cols-2 gap-12 md:gap-16 items-center border-b border-brand/10">

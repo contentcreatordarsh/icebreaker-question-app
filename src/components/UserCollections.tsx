@@ -39,7 +39,7 @@ export default function UserCollections({ onClose, onSelectQuestion }: UserColle
 
       try {
         const snap = await getDocs(q);
-        setQuestions(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setQuestions(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as StoredQuestion)));
       } catch (error) {
         console.error(`Error fetching ${activeTab}:`, error);
       } finally {

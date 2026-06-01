@@ -1,6 +1,6 @@
-import { StrictMode, lazy, Suspense } from 'react';
+import { StrictMode, lazy, Suspense, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
@@ -25,11 +25,44 @@ const HostSession = lazy(() => import('./pages/HostSession.tsx'));
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard.tsx'));
 const SessionHistory = lazy(() => import('./pages/SessionHistory.tsx'));
 
+/** Announces route changes to screen readers via an aria-live region. */
+const ROUTE_TITLES: Record<string, string> = {
+  '/': 'Dinner Table Cards',
+  '/privacy': 'Privacy Policy',
+  '/terms': 'Terms of Service',
+  '/account': 'Account',
+  '/play': 'Join a Live Session',
+  '/admin': 'Admin Dashboard',
+  '/sessions': 'Session History',
+};
+
+function RouteAnnouncer() {
+  const { pathname } = useLocation();
+  const [announcement, setAnnouncement] = useState('');
+
+  useEffect(() => {
+    // Derive page title from route map, or generate from pathname
+    const title =
+      ROUTE_TITLES[pathname] ??
+      (pathname.startsWith('/play/') ? 'Live Session' :
+       pathname.startsWith('/host/') ? 'Host Session' :
+       'Dinner Table Cards');
+    setAnnouncement(`Navigated to ${title}`);
+  }, [pathname]);
+
+  return (
+    <div aria-live="polite" aria-atomic="true" className="sr-only">
+      {announcement}
+    </div>
+  );
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <OfflineIndicator />
       <BrowserRouter>
+        <RouteAnnouncer />
         <Suspense fallback={<div className="min-h-screen bg-[#F5F5F0]" />}>
           <Routes>
             <Route path="/" element={<App />} />

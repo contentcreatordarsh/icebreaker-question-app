@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ChevronLeft, Loader2 } from 'lucide-react';
 import { useAuthState } from 'react-firebase-hooks/auth';
@@ -250,33 +250,71 @@ export default function Account() {
       </div>
 
       {showDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-brand/40 px-6">
-          <div className="bg-paper border border-brand/20 rounded-2xl max-w-sm w-full p-8">
-            <h2 className="font-serif text-xl italic mb-3">Delete your account?</h2>
-            <p className="text-sm leading-relaxed opacity-70 mb-6">
-              This permanently removes your profile, favorites, and history. Active subscriptions
-              should be canceled first. This cannot be undone.
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => { setShowDelete(false); setError(null); }}
-                disabled={deleting}
-                className="text-[11px] caps-tracking opacity-60 hover:opacity-100 transition-opacity px-4 py-2 disabled:opacity-40"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteAccount}
-                disabled={deleting}
-                className="inline-flex items-center gap-2 text-[11px] caps-tracking bg-red-700 text-paper rounded-full px-5 py-2.5 hover:bg-red-800 transition-colors disabled:opacity-50"
-              >
-                {deleting && <Loader2 size={14} className="animate-spin" />}
-                Delete forever
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeleteConfirmModal
+          deleting={deleting}
+          onCancel={() => { setShowDelete(false); setError(null); }}
+          onConfirm={handleDeleteAccount}
+        />
       )}
+    </div>
+  );
+}
+
+/** Accessible delete-account modal with focus trap, Escape-to-close, and ARIA roles. */
+function DeleteConfirmModal({ deleting, onCancel, onConfirm }: {
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  // Focus the Cancel button on mount so keyboard users land inside the modal
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !deleting) onCancel();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [deleting, onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-brand/40 px-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-dialog-title"
+      onClick={(e) => { if (e.target === e.currentTarget && !deleting) onCancel(); }}
+    >
+      <div className="bg-paper border border-brand/20 rounded-2xl max-w-sm w-full p-8">
+        <h2 id="delete-dialog-title" className="font-serif text-xl italic mb-3">Delete your account?</h2>
+        <p className="text-sm leading-relaxed opacity-70 mb-6">
+          This permanently removes your profile, favorites, and history. Active subscriptions
+          should be canceled first. This cannot be undone.
+        </p>
+        <div className="flex gap-3 justify-end">
+          <button
+            ref={cancelRef}
+            onClick={onCancel}
+            disabled={deleting}
+            className="text-[11px] caps-tracking opacity-60 hover:opacity-100 transition-opacity px-4 py-2 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={deleting}
+            className="inline-flex items-center gap-2 text-[11px] caps-tracking bg-red-700 text-paper rounded-full px-5 py-2.5 hover:bg-red-800 transition-colors disabled:opacity-50"
+          >
+            {deleting && <Loader2 size={14} className="animate-spin" />}
+            Delete forever
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

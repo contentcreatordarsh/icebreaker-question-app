@@ -1,5 +1,6 @@
 import React from 'react';
 
+interface Props { children: React.ReactNode; fallbackMessage?: string }
 interface State { hasError: boolean; message: string }
 
 /**
@@ -7,14 +8,8 @@ interface State { hasError: boolean; message: string }
  * (Leaderboard, AnswerCard, VotingCard, etc.) without killing the entire page.
  * Shows a friendlier recovery UI than the root ErrorBoundary.
  */
-export default class GameErrorBoundary extends React.Component<
-  { children: React.ReactNode; fallbackMessage?: string },
-  State
-> {
-  constructor(props: { children: React.ReactNode; fallbackMessage?: string }) {
-    super(props);
-    this.state = { hasError: false, message: '' };
-  }
+export default class GameErrorBoundary extends React.Component<Props, State> {
+  state: State = { hasError: false, message: '' };
 
   static getDerivedStateFromError(error: unknown): State {
     return {
