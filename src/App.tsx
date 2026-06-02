@@ -693,7 +693,7 @@ export default function App() {
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-2 h-2 rounded-full bg-accent" />
-            <span className="caps-tracking">Connection Verified</span>
+            <span className="caps-tracking">Works Offline</span>
           </div>
           <div className="flex gap-4">
             <button
