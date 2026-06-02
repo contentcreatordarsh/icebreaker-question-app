@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react';
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { authedFetch } from '../../lib/firebase';
+import { useCallback } from 'react';
 import { cn } from '../../lib/utils';
+import { useCreateSession } from './useCreateSession';
+
+/** Key under which we remember a "host a session" intent across an auth redirect. */
+export const PENDING_HOST_KEY = 'dtc:pendingHostSession';
 
 interface CreateSessionButtonProps {
   className?: string;
@@ -14,7 +16,8 @@ interface CreateSessionButtonProps {
 
 /**
  * Button that creates a new live session via the API and redirects to /host/:code.
- * Requires Firebase auth — if not signed in, calls onNeedAuth.
+ * Requires Firebase auth — if not signed in, it records the host intent (so it
+ * can resume after the sign-in redirect) and calls onNeedAuth.
  */
 export default function CreateSessionButton({
   className,
@@ -23,40 +26,23 @@ export default function CreateSessionButton({
   isAuthenticated,
   children,
 }: CreateSessionButtonProps) {
-  const navigate = useNavigate();
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState('');
+  const { createSession, creating, error } = useCreateSession();
 
-  const handleCreate = useCallback(async () => {
+  const handleCreate = useCallback(() => {
     if (!isAuthenticated) {
+      // signInWithGoogle triggers a full-page redirect, so remember that the
+      // user wanted to host. Play.tsx resumes session creation on return.
+      try {
+        sessionStorage.setItem(PENDING_HOST_KEY, '1');
+      } catch {
+        /* sessionStorage may be unavailable (private mode) — non-fatal */
+      }
       onNeedAuth?.();
       return;
     }
 
-    setCreating(true);
-    setError('');
-
-    try {
-      const res = await authedFetch('/api/session/create');
-      const data = await res.json() as { roomCode?: string; hostToken?: string; error?: string };
-
-      if (!res.ok) {
-        setError(data.error || 'Failed to create session');
-        setCreating(false);
-        return;
-      }
-
-      if (data.roomCode && data.hostToken) {
-        // Navigate to host view with the token in state (not in URL for security)
-        navigate(`/host/${data.roomCode}`, {
-          state: { hostToken: data.hostToken, hostName: 'Host' },
-        });
-      }
-    } catch {
-      setError('Network error — please try again.');
-      setCreating(false);
-    }
-  }, [isAuthenticated, onNeedAuth, navigate]);
+    void createSession();
+  }, [isAuthenticated, onNeedAuth, createSession]);
 
   return (
     <div className="inline-flex flex-col items-center">
