@@ -104,13 +104,20 @@ function addSecurityHeaders(response: Response): Response {
   r.headers.set(
     'Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self' https://static.cloudflareinsights.com; " +
+    // apis.google.com hosts the gapi script (api.js) Firebase Auth uses to set
+    // up its cross-frame messaging relay for getRedirectResult.
+    "script-src 'self' https://apis.google.com https://static.cloudflareinsights.com; " +
     "style-src 'self' 'unsafe-inline'; " +
     "connect-src 'self' wss: https://firestore.googleapis.com https://securetoken.googleapis.com " +
       "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com " +
+      "https://apis.google.com https://www.googleapis.com " +
       "https://cloudflareinsights.com; " +
     "img-src 'self' https://lh3.googleusercontent.com data:; " +
-    "frame-src https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com; " +
+    // Firebase Auth loads its helper iframe from the authDomain (now our own
+    // origin, 'self', i.e. /__/auth/iframe) plus a gapi relay iframe from
+    // apis.google.com. Without 'self' + apis.google.com here, getRedirectResult
+    // fails with auth/internal-error. firebaseapp.com kept for completeness.
+    "frame-src 'self' https://apis.google.com https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com; " +
     "frame-ancestors 'none'; " +
     "object-src 'none'; " +
     "base-uri 'self'; " +
@@ -304,6 +311,34 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // ── Firebase reserved config endpoint ───────────────────────────────────
+    // Firebase's auth handler (/__/auth/handler.js) fetches the project config
+    // from [authDomain]/__/firebase/init.json to obtain the apiKey/projectId it
+    // needs to exchange the OAuth code. Because authDomain is our own domain
+    // (dinnertablecards.xyz) and Firebase Hosting was never deployed for this
+    // project, that path would otherwise fall through to the SPA and return
+    // HTML — breaking the handler with auth/internal-error and silently
+    // aborting every signInWithRedirect. We serve the (public, client-side)
+    // config here so the handler can complete the sign-in.
+    if (url.pathname === '/__/firebase/init.json') {
+      return new Response(
+        JSON.stringify({
+          apiKey: 'AIzaSyDiVSR5GThxIJBGxnwwvb_UtytkFmlkrAI',
+          authDomain: 'dinnertablecards.xyz',
+          projectId: 'gen-lang-client-0170753836',
+          storageBucket: 'gen-lang-client-0170753836.firebasestorage.app',
+          messagingSenderId: '962093257082',
+          appId: '1:962093257082:web:4d9096bdaeefdf9501c6c3',
+        }),
+        {
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'public, max-age=3600',
+          },
+        },
+      );
+    }
 
     // ── Firebase auth handler proxy ─────────────────────────────────────────
     // Firebase's signInWithRedirect uses [authDomain]/__/auth/ as the OAuth

@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { Link } from 'react-router-dom';
-import { auth, db, signInWithGoogle, authedFetch, getRedirectResult } from './lib/firebase';
+import { auth, db, signInWithGoogle, authedFetch } from './lib/firebase';
 import { doc, getDoc, getDocFromServer, setDoc, serverTimestamp } from 'firebase/firestore';
 import { AnimatePresence } from 'motion/react';
 import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Lock, Play } from 'lucide-react';
@@ -199,20 +199,8 @@ export default function App() {
     syncProfile();
   }, [user, refreshProfile]);
 
-  // ── Google redirect sign-in result ──────────────────────────────────────────
-  // After signInWithRedirect returns the user to this page, Firebase stores the
-  // result in IndexedDB. We call getRedirectResult() once on mount to finalise
-  // it. Errors (account disabled, network, etc.) are logged but not fatal.
-  useEffect(() => {
-    getRedirectResult(auth).catch((err) => {
-      // auth/popup-closed-by-user and auth/cancelled-popup-request are benign
-      // (user closed the window). Log everything else.
-      if (err?.code !== 'auth/popup-closed-by-user' &&
-          err?.code !== 'auth/cancelled-popup-request') {
-        console.error('Redirect sign-in error:', err?.code, err?.message);
-      }
-    });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Note: Google redirect sign-in is finalised centrally in main.tsx (runs on
+  // every route, since the redirect can land on /play, /host, etc. — not just "/").
 
   // ── Referral capture ────────────────────────────────────────────────────────
   // Stash ?ref=CODE in localStorage so it survives the Google OAuth redirect,

@@ -5,12 +5,29 @@ import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import OfflineIndicator from './components/OfflineIndicator.tsx';
+import { auth, getRedirectResult } from './lib/firebase';
 import './index.css';
 
 // Register the Workbox service worker via vite-plugin-pwa's auto-update module.
 // This handles skipWaiting, claims clients, and auto-reloads when a new SW activates —
 // so new routes (like /play/:code) become available immediately after deploy.
 registerSW({ immediate: true });
+
+// ── Finalise Google sign-in redirects on EVERY route ────────────────────────
+// Firebase v9+ requires getRedirectResult() to run on the page the OAuth
+// redirect lands on, otherwise signInWithRedirect never completes and
+// onAuthStateChanged stays null. signInWithGoogle() can be triggered from any
+// page (e.g. "Host a New Session" on /play), so the redirect can land anywhere
+// — not just "/". Calling it once here at app bootstrap covers all routes.
+// The result itself is unused; we rely on onAuthStateChanged via useAuthState.
+getRedirectResult(auth).catch((err) => {
+  if (
+    err?.code !== 'auth/popup-closed-by-user' &&
+    err?.code !== 'auth/cancelled-popup-request'
+  ) {
+    console.error('Redirect sign-in error:', err?.code, err?.message);
+  }
+});
 
 // Lazy-load secondary pages — they're not needed on first paint and
 // together make up ~15-20% of the bundle. Suspense fallback is a blank
