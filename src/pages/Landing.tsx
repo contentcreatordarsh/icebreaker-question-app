@@ -417,7 +417,7 @@ export default function Landing({ onSignIn }: LandingProps) {
             </button>
           </div>
           <p className="text-[10px] caps-tracking opacity-35 mt-4">
-            1 free session per week &middot; Unlimited with Premium
+            Host up to 10 live sessions per week &middot; free
           </p>
         </section>
 

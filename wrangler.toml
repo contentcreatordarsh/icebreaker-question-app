@@ -12,9 +12,15 @@ binding = "ASSETS"
 [vars]
 FIREBASE_PROJECT_ID = "gen-lang-client-0170753836"
 FIREBASE_DATABASE_ID = "ai-studio-ce545956-aa8d-4e12-9ad5-c58ab798d709"
-# Stripe price IDs — not secret (visible in client JS anyway)
+# Stripe price IDs — not secret (visible in client JS anyway). DORMANT — kept in
+# case a Singapore UEN is obtained later; the active provider is Lemon Squeezy.
 STRIPE_MONTHLY_PRICE_ID = "price_1TbuoIGGeaVzeXJn6DUqMXnR"
 STRIPE_YEARLY_PRICE_ID  = "price_1TbusLGGeaVzeXJnZSPNgkFU"
+# Lemon Squeezy (active provider) — store + variant IDs are public (like price IDs).
+# Replace these placeholders with the real IDs from the Lemon Squeezy dashboard.
+LEMONSQUEEZY_STORE_ID = "REPLACE_WITH_STORE_ID"
+LEMONSQUEEZY_MONTHLY_VARIANT_ID = "REPLACE_WITH_MONTHLY_VARIANT_ID"
+LEMONSQUEEZY_YEARLY_VARIANT_ID = "REPLACE_WITH_YEARLY_VARIANT_ID"
 # Email (Resend) — replace with a verified sender from your Resend domain.
 # Uses onboarding@resend.dev (test-only) until RESEND_FROM is set.
 RESEND_FROM = "Dinner Table Cards <onboarding@resend.dev>"
@@ -51,14 +57,16 @@ invocation_logs = true
 crons = ["0 0 1 * *"]
 
 # Secrets (set via `wrangler secret put <NAME>` — never committed):
-#   STRIPE_SECRET_KEY
-#   STRIPE_WEBHOOK_SECRET
+#   LEMONSQUEEZY_API_KEY       ← Settings → API in the Lemon Squeezy dashboard
+#   LEMONSQUEEZY_WEBHOOK_SECRET ← the signing secret you set when creating the webhook
+#   STRIPE_SECRET_KEY           (dormant)
+#   STRIPE_WEBHOOK_SECRET       (dormant)
 #   FIREBASE_SERVICE_ACCOUNT_EMAIL
 #   FIREBASE_PRIVATE_KEY
 #   RESEND_API_KEY  ← get from resend.com/api-keys (emails silently skipped until set)
 #
 # Build-time VITE_ vars (set in .env locally or Cloudflare build environment):
-#   VITE_STRIPE_PUBLISHABLE_KEY
-#   VITE_STRIPE_MONTHLY_PRICE_ID
-#   VITE_STRIPE_YEARLY_PRICE_ID
-#   VITE_STRIPE_LIFETIME_PRICE_ID
+#   VITE_LEMONSQUEEZY_MONTHLY_VARIANT_ID
+#   VITE_LEMONSQUEEZY_YEARLY_VARIANT_ID
+#   VITE_STRIPE_MONTHLY_PRICE_ID  (dormant)
+#   VITE_STRIPE_YEARLY_PRICE_ID   (dormant)

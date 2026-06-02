@@ -153,7 +153,13 @@ export default function Play() {
           Host a round at your dinner party. Everyone answers the same question,
           then reveal responses one by one.
         </p>
-        {resuming ? (
+        {loadingAuth ? (
+          // Auth still resolving — show a disabled button so an early click can't
+          // mis-fire into a sign-in redirect for a user who is actually signed in.
+          <div className="rounded-full bg-[#5A5A40] px-6 py-3 text-xs uppercase tracking-[0.3em] text-[#F5F2ED] shadow-md opacity-50">
+            Host a New Session
+          </div>
+        ) : resuming ? (
           <div className="rounded-full bg-[#5A5A40] px-6 py-3 text-xs uppercase tracking-[0.3em] text-[#F5F2ED] shadow-md opacity-80">
             Creating your session…
           </div>
@@ -170,7 +176,7 @@ export default function Play() {
           <p className="mt-2 text-center text-xs text-red-600">{resumeError}</p>
         )}
         <p className="mt-3 text-[10px] uppercase tracking-wider text-[#1A1A1A]/30">
-          {user ? '1 free session per week · Unlimited with Premium' : 'Sign in to host'}
+          {loadingAuth ? ' ' : user ? 'Host up to 10 live sessions per week — free' : 'Sign in to host'}
         </p>
       </section>
 

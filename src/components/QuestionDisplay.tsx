@@ -48,6 +48,41 @@ export default function QuestionDisplay({
   // fires onUsageIncremented, which refreshes the profile, which would re-run the effect.
   const consumedRef = useRef(false);
 
+  // Feedback-to-unlock (at the usage limit): share feedback → get free questions.
+  const [showFeedbackUnlock, setShowFeedbackUnlock] = useState(false);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockMsg, setUnlockMsg] = useState<string | null>(null);
+
+  const handleFeedbackUnlock = useCallback(async () => {
+    const text = feedbackText.trim();
+    if (text.length < 3) {
+      setUnlockMsg('Please share a little more.');
+      return;
+    }
+    setUnlocking(true);
+    setUnlockMsg(null);
+    try {
+      const res = await authedFetch('/api/feedback-unlock', { text });
+      const data = (await res.json()) as { ok?: boolean; granted?: number; alreadyRewarded?: boolean; error?: string };
+      if (res.ok && data.ok) {
+        if (data.granted && data.granted > 0) {
+          setUnlockMsg(`Thank you! ${data.granted} free questions unlocked.`);
+          // Refresh the profile (no arg → parent re-reads from server), lifting the wall.
+          onUsageIncremented?.();
+        } else {
+          setUnlockMsg('Thanks for the feedback! (You already claimed your free questions earlier.)');
+        }
+      } else {
+        setUnlockMsg(data.error || 'Could not submit — please try again.');
+      }
+    } catch {
+      setUnlockMsg('Could not submit — please try again.');
+    } finally {
+      setUnlocking(false);
+    }
+  }, [feedbackText, onUsageIncremented]);
+
   const gradient = getCategoryGradient(category);
   const accent = getCategoryAccent(category);
 
@@ -89,6 +124,7 @@ export default function QuestionDisplay({
   useEffect(() => {
     if (!overrideQuestion) return;
     setDailyQuestion(overrideQuestion);
+    setLoading(false); // clear the mount loading state (daily effect early-returns when overridden)
     setIsFavorited(false);
     setIsDiscussed(false);
     if (!auth.currentUser) return;
@@ -295,29 +331,60 @@ export default function QuestionDisplay({
         >
           <div className="bg-paper/90 backdrop-blur-md border border-brand/20 rounded-sm px-10 py-10 max-w-sm text-center shadow-2xl">
             <Sparkles className="mx-auto mb-4 text-accent" size={24} />
-            <h2 className="font-serif text-2xl italic text-brand mb-3">Unlock the Complete Archive</h2>
-            <p className="font-serif italic text-brand/60 mb-6 text-sm leading-relaxed">
-              You've explored your free questions. Upgrade to keep the conversation going — over 3,000 more await.
-            </p>
-            <button
-              onClick={onUpgrade}
-              className="caps-tracking bg-brand text-white px-8 py-3 w-full hover:bg-opacity-90 transition-all text-[11px] mb-3"
-            >
-              Unlock the Archive
-            </button>
-            <p className="text-[9px] caps-tracking opacity-30">From $2/month · Cancel anytime</p>
-            <div className="mt-4 pt-4 border-t border-brand/10">
-              <p className="text-[9px] caps-tracking opacity-40 text-center">
-                Or invite a friend —{' '}
-                <button
-                  onClick={onUpgrade}
-                  className="underline hover:opacity-60 transition-opacity"
-                >
-                  earn 50 free questions
-                </button>
-                {' '}via your profile
-              </p>
-            </div>
+            {userProfile?.feedbackRewarded && !(unlockMsg && unlockMsg.startsWith('Thank')) ? (
+              /* Already claimed their one-time free batch — gentle hard stop. */
+              <>
+                <h2 className="font-serif text-2xl italic text-brand mb-3">That's all your free questions</h2>
+                <p className="font-serif italic text-brand/60 text-sm leading-relaxed">
+                  Thanks for spending time with Dinner Table Cards — you've used all your free questions.
+                  We're adding more soon, so check back shortly.
+                </p>
+              </>
+            ) : unlockMsg && unlockMsg.startsWith('Thank') ? (
+              /* Success state right after unlocking. */
+              <>
+                <h2 className="font-serif text-2xl italic text-brand mb-3">Unlocked</h2>
+                <p className="text-[12px] caps-tracking text-accent">{unlockMsg}</p>
+              </>
+            ) : (
+              <>
+                <h2 className="font-serif text-2xl italic text-brand mb-3">You've used your free questions</h2>
+                <p className="font-serif italic text-brand/60 mb-6 text-sm leading-relaxed">
+                  Tell us what you think and we'll unlock 25 more — completely free.
+                </p>
+                {!showFeedbackUnlock ? (
+                  <button
+                    onClick={() => setShowFeedbackUnlock(true)}
+                    className="caps-tracking bg-brand text-white px-8 py-3 w-full hover:bg-opacity-90 transition-all text-[11px]"
+                  >
+                    Share feedback · Unlock 25 free
+                  </button>
+                ) : (
+                  <div className="text-left">
+                    <label htmlFor="unlock-feedback" className="text-[9px] caps-tracking opacity-50 block mb-2">
+                      What do you think of Dinner Table Cards?
+                    </label>
+                    <textarea
+                      id="unlock-feedback"
+                      value={feedbackText}
+                      onChange={(e) => { setFeedbackText(e.target.value); setUnlockMsg(null); }}
+                      maxLength={1000}
+                      rows={3}
+                      placeholder="One thing you loved, or one thing we should fix…"
+                      className="w-full border border-brand/20 rounded-sm px-3 py-2 text-sm text-brand bg-white/70 outline-none focus:border-brand/50 resize-none mb-2"
+                    />
+                    {unlockMsg && <p className="text-[10px] text-red-600 mb-2">{unlockMsg}</p>}
+                    <button
+                      onClick={handleFeedbackUnlock}
+                      disabled={unlocking}
+                      className="caps-tracking bg-brand text-white px-6 py-2.5 w-full hover:bg-opacity-90 transition-all text-[10px] disabled:opacity-50"
+                    >
+                      {unlocking ? 'Submitting…' : 'Submit & Unlock 25 Free Questions'}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </motion.div>
       </div>

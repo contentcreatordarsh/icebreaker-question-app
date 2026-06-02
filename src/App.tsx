@@ -24,6 +24,8 @@ const UsageDashboard = lazy(() => import('./components/UsageDashboard'));
 const UserCollections = lazy(() => import('./components/UserCollections'));
 import { Category, Difficulty, UserProfile, DailyQuestion, PREMIUM_CATEGORIES, QuestionPack } from './types';
 import { QUESTION_PACKS } from './data/packs';
+import { TOPICS } from './data/topics';
+import { pickTopicQuestion } from './data/questions';
 import { PLANS } from './constants';
 import { cn } from './lib/utils';
 import Landing from './pages/Landing';
@@ -68,6 +70,10 @@ export default function App() {
   // Question packs
   const [activePack, setActivePack] = useState<QuestionPack | null>(null);
   const [packIndex, setPackIndex] = useState(0);
+
+  // Topics (two-level: parent group expanded + active leaf pool)
+  const [activeTopicParent, setActiveTopicParent] = useState<string | null>(null);
+  const [activeTopicLeaf, setActiveTopicLeaf] = useState<string | null>(null);
 
   // Payment success
   const [showPaymentBanner, setShowPaymentBanner] = useState(false);
@@ -277,9 +283,22 @@ export default function App() {
 
   const handleShuffle = useCallback(() => {
     setActivePack(null);
+    // If a topic is active, re-pick from that topic pool instead of the daily bank.
+    if (activeTopicLeaf) {
+      setOverrideQuestion(pickTopicQuestion(activeTopicLeaf, difficulty));
+      return;
+    }
     setOverrideQuestion(null);
     setShuffleKey(k => k + 1);
-  }, []);
+  }, [activeTopicLeaf, difficulty]);
+
+  // ── Topic handlers ───────────────────────────────────────────────────────────
+  const handleSelectTopic = useCallback((leafId: string) => {
+    setActivePack(null);
+    setCategory('Icebreaker'); // neutral, non-premium category for the gate
+    setActiveTopicLeaf(leafId);
+    setOverrideQuestion(pickTopicQuestion(leafId, difficulty));
+  }, [difficulty]);
 
   // ── Pack handlers ────────────────────────────────────────────────────────────
   const packQuestionToOverride = useCallback((pack: QuestionPack, idx: number): DailyQuestion => ({
@@ -291,6 +310,8 @@ export default function App() {
 
   const handleSelectPack = useCallback((pack: QuestionPack) => {
     setActivePack(pack);
+    setActiveTopicLeaf(null);
+    setActiveTopicParent(null);
     setPackIndex(0);
     setOverrideQuestion(packQuestionToOverride(pack, 0));
   }, [packQuestionToOverride]);
@@ -412,7 +433,8 @@ export default function App() {
                       <span className="text-[8px] caps-tracking opacity-20 group-hover:opacity-60 transition-opacity">
                         {userProfile?.usageCount || 0} / {
                           PLANS[userProfile?.subscriptionPlan || 'free'].limit === 1000000
-                            ? '∞' : PLANS[userProfile?.subscriptionPlan || 'free'].limit
+                            ? '∞'
+                            : PLANS[userProfile?.subscriptionPlan || 'free'].limit + (userProfile?.bonusQuestions ?? 0)
                         }
                       </span>
                     </div>
@@ -504,6 +526,8 @@ export default function App() {
                 onClick={() => {
                   setCategory(cat.label);
                   setOverrideQuestion(null);
+                  setActiveTopicLeaf(null);
+                  setActiveTopicParent(null);
                   if (isLocked) setShowPricing(true);
                 }}
                 className={cn(
@@ -529,7 +553,11 @@ export default function App() {
             return (
               <button
                 key={dif}
-                onClick={() => { setDifficulty(dif); setOverrideQuestion(null); }}
+                onClick={() => {
+                  setDifficulty(dif);
+                  if (activeTopicLeaf) setOverrideQuestion(pickTopicQuestion(activeTopicLeaf, dif));
+                  else setOverrideQuestion(null);
+                }}
                 className={cn(
                   'px-5 py-3 text-[10px] caps-tracking border transition-all min-h-[44px]',
                   isActive ? 'bg-brand text-white border-brand' : 'border-brand/10 opacity-40 hover:opacity-100',
@@ -539,6 +567,49 @@ export default function App() {
               </button>
             );
           })}
+        </div>
+
+        {/* Topics — two-level selector (parent group → sub-topic pool) */}
+        <div className="mb-12 px-4 md:px-8">
+          <div className="text-center mb-5">
+            <span className="caps-tracking opacity-40">Explore by Topic</span>
+          </div>
+          <div className="flex justify-center flex-wrap gap-2.5 mb-4">
+            {TOPICS.map((group) => {
+              const isOpen = activeTopicParent === group.id;
+              return (
+                <button
+                  key={group.id}
+                  onClick={() => setActiveTopicParent(isOpen ? null : group.id)}
+                  className={cn(
+                    'caps-tracking text-[10px] px-4 py-2 rounded-full border transition-all flex items-center gap-1.5 min-h-[36px]',
+                    isOpen ? 'bg-brand text-white border-brand' : 'border-brand/15 opacity-60 hover:opacity-100',
+                  )}
+                >
+                  <span aria-hidden>{group.emoji}</span> {group.label}
+                </button>
+              );
+            })}
+          </div>
+          {activeTopicParent && (
+            <div className="flex justify-center flex-wrap gap-2">
+              {TOPICS.find(g => g.id === activeTopicParent)?.children.map((leaf) => {
+                const isActive = activeTopicLeaf === leaf.id;
+                return (
+                  <button
+                    key={leaf.id}
+                    onClick={() => handleSelectTopic(leaf.id)}
+                    className={cn(
+                      'caps-tracking text-[10px] px-3.5 py-1.5 rounded-full border transition-all min-h-[32px]',
+                      isActive ? 'bg-accent text-white border-accent' : 'border-brand/10 opacity-50 hover:opacity-100',
+                    )}
+                  >
+                    {leaf.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Question Packs */}
@@ -557,6 +628,9 @@ export default function App() {
         {/* Question Area */}
         <div className="flex-grow flex flex-col justify-center px-8">
           <QuestionDisplay
+            // Remount when the active topic changes so a topic switch always
+            // shows a fresh question (inert when no topic is selected).
+            key={activeTopicLeaf ?? 'main'}
             category={category}
             difficulty={difficulty}
             userProfile={userProfile}

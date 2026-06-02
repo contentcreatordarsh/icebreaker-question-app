@@ -7,12 +7,19 @@ export { GameSession } from './game-session';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Env {
-  // Stripe
+  // Stripe (dormant — kept for future use if a UEN is ever obtained)
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
   // Stripe price IDs — set in wrangler.toml [vars] (not secrets; they're public)
   STRIPE_MONTHLY_PRICE_ID: string;
   STRIPE_YEARLY_PRICE_ID: string;
+  // Lemon Squeezy (active payment provider — Merchant of Record)
+  LEMONSQUEEZY_API_KEY: string;        // secret
+  LEMONSQUEEZY_WEBHOOK_SECRET: string; // secret (webhook signing secret)
+  // Store + variant IDs — set in wrangler.toml [vars] (public, like Stripe price IDs)
+  LEMONSQUEEZY_STORE_ID: string;
+  LEMONSQUEEZY_MONTHLY_VARIANT_ID: string;
+  LEMONSQUEEZY_YEARLY_VARIANT_ID: string;
   // Firebase service account (for Firestore REST writes — bypasses security rules)
   FIREBASE_SERVICE_ACCOUNT_EMAIL: string;
   FIREBASE_PRIVATE_KEY: string;        // PEM string, full RSA private key
@@ -241,6 +248,13 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   if (url.pathname === '/api/stripe-webhook' && request.method === 'POST') {
     return handleStripeWebhook(request, env);
   }
+  // Lemon Squeezy (active provider)
+  if (url.pathname === '/api/ls/create-checkout' && request.method === 'POST') {
+    return handleLsCheckout(request, env);
+  }
+  if (url.pathname === '/api/ls/webhook' && request.method === 'POST') {
+    return handleLsWebhook(request, env);
+  }
   if (url.pathname === '/api/generate-question' && request.method === 'POST') {
     return handleGenerateQuestion(request, env);
   }
@@ -280,6 +294,10 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   // ── Feedback endpoint (no auth required) ────────────────────────────────────
   if (url.pathname === '/api/feedback' && request.method === 'POST') {
     return handleFeedback(request, env);
+  }
+  // Feedback-for-free-questions unlock (auth required — grants bonus questions)
+  if (url.pathname === '/api/feedback-unlock' && request.method === 'POST') {
+    return handleFeedbackUnlock(request, env);
   }
 
   // ── Public stats endpoint ──────────────────────────────────────────────────
@@ -568,6 +586,272 @@ async function handleStripeWebhook(request: Request, env: Env): Promise<Response
     // isPremium/plan is harmless), so a retry recovers from transient failures
     // instead of silently leaving a paid user without premium.
     console.error('Webhook handler error:', err);
+    return Response.json({ received: false }, { status: 500 });
+  }
+
+  return Response.json({ received: true });
+}
+
+// ── Lemon Squeezy (Merchant of Record — active payment provider) ───────────────
+
+const LS_API = 'https://api.lemonsqueezy.com/v1';
+
+/** Headers for Lemon Squeezy's JSON:API. */
+function lsHeaders(env: Env): HeadersInit {
+  return {
+    Authorization: `Bearer ${env.LEMONSQUEEZY_API_KEY}`,
+    Accept: 'application/vnd.api+json',
+    'Content-Type': 'application/vnd.api+json',
+  };
+}
+
+/** Map a Lemon Squeezy subscription status onto our internal status vocabulary. */
+function mapLsStatus(status: string): string {
+  switch (status) {
+    case 'active':
+    case 'on_trial':
+      return 'active';
+    case 'past_due':
+      return 'past_due';
+    case 'cancelled':
+    case 'expired':
+    case 'unpaid':
+    case 'paused':
+      return 'canceled';
+    default:
+      return 'none';
+  }
+}
+
+/**
+ * Create a Lemon Squeezy hosted checkout and return its URL.
+ * Mirrors handleCheckout (Stripe): authenticate, validate the variant + redirect
+ * URLs, then ask the provider for a hosted checkout the client redirects to.
+ */
+async function handleLsCheckout(request: Request, env: Env): Promise<Response> {
+  if (!env.LEMONSQUEEZY_API_KEY) {
+    return Response.json({ error: 'Payments are not configured' }, { status: 500 });
+  }
+
+  // Authenticate: the buyer is whoever the verified token says — never trust a body UID.
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+
+  try {
+    const body = await request.json() as {
+      variantId: string;
+      successUrl: string;
+      cancelUrl: string;
+    };
+
+    if (!env.LEMONSQUEEZY_STORE_ID || !env.LEMONSQUEEZY_MONTHLY_VARIANT_ID || !env.LEMONSQUEEZY_YEARLY_VARIANT_ID) {
+      console.error('Lemon Squeezy store/variant IDs are not configured');
+      return Response.json({ error: 'Checkout is not configured.' }, { status: 500 });
+    }
+
+    // Reject any variant not explicitly issued by this app — prevents a user
+    // substituting a cheaper/different variant from the same store.
+    const ALLOWED_VARIANTS = [env.LEMONSQUEEZY_MONTHLY_VARIANT_ID, env.LEMONSQUEEZY_YEARLY_VARIANT_ID];
+    if (!body.variantId || !ALLOWED_VARIANTS.includes(String(body.variantId))) {
+      return Response.json({ error: 'Invalid variant ID.' }, { status: 400 });
+    }
+
+    // Validate redirect URL against the app's own origins to prevent open redirects.
+    const successUrl = ALLOWED_ORIGINS.some(o => (body.successUrl ?? '').startsWith(o))
+      ? body.successUrl
+      : APP_ORIGIN + '?payment=success';
+
+    const firebaseUid = auth.uid;
+    const customerEmail = auth.email ?? undefined;
+
+    // JSON:API payload. checkout_data.custom surfaces back to us as
+    // meta.custom_data on every webhook, so we can map payment → user.
+    const payload = {
+      data: {
+        type: 'checkouts',
+        attributes: {
+          checkout_data: {
+            ...(customerEmail ? { email: customerEmail } : {}),
+            custom: { uid: firebaseUid },
+          },
+          product_options: { redirect_url: successUrl },
+        },
+        relationships: {
+          store: { data: { type: 'stores', id: String(env.LEMONSQUEEZY_STORE_ID) } },
+          variant: { data: { type: 'variants', id: String(body.variantId) } },
+        },
+      },
+    };
+
+    const res = await fetch(`${LS_API}/checkouts`, {
+      method: 'POST',
+      headers: lsHeaders(env),
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      console.error('Lemon Squeezy checkout error:', res.status, await res.text());
+      return Response.json({ error: 'Checkout failed — please try again.' }, { status: 500 });
+    }
+
+    const json = await res.json() as { data?: { attributes?: { url?: string } } };
+    const url = json.data?.attributes?.url;
+    if (!url) {
+      return Response.json({ error: 'Checkout failed — please try again.' }, { status: 500 });
+    }
+
+    // Pre-cache email → UID mapping in KV as a fallback for the webhook.
+    if (customerEmail) {
+      await env.APP_KV.put(`email:${customerEmail}`, firebaseUid, { expirationTtl: 60 * 60 * 24 * 30 });
+    }
+
+    return Response.json({ url });
+  } catch (err: unknown) {
+    console.error('Lemon Squeezy checkout error:', err instanceof Error ? err.message : err);
+    return Response.json({ error: 'Checkout failed — please try again.' }, { status: 500 });
+  }
+}
+
+/**
+ * Verify a Lemon Squeezy webhook signature.
+ * X-Signature is a hex-encoded HMAC-SHA256 of the raw body, keyed by the
+ * webhook signing secret. Compared in constant time.
+ */
+async function verifyLsSignature(raw: string, signature: string, secret: string): Promise<boolean> {
+  if (!signature) return false;
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sigBuf = await crypto.subtle.sign('HMAC', key, enc.encode(raw));
+  const expected = [...new Uint8Array(sigBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
+  // Constant-time comparison.
+  if (expected.length !== signature.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i++) {
+    mismatch |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+/**
+ * Lemon Squeezy webhook. Mirrors handleStripeWebhook: verify signature, then
+ * update the user's subscription state in Firestore. Returns 500 on handler
+ * error so Lemon Squeezy retries (writes are idempotent).
+ */
+async function handleLsWebhook(request: Request, env: Env): Promise<Response> {
+  if (!env.LEMONSQUEEZY_WEBHOOK_SECRET) {
+    return Response.json({ error: 'Lemon Squeezy not configured' }, { status: 500 });
+  }
+
+  // Read raw body BEFORE parsing — needed for signature verification.
+  const raw = await request.text();
+  const signature = request.headers.get('X-Signature') ?? '';
+  const valid = await verifyLsSignature(raw, signature, env.LEMONSQUEEZY_WEBHOOK_SECRET);
+  if (!valid) {
+    console.error('Lemon Squeezy webhook signature verification failed');
+    return Response.json({ error: 'Invalid signature' }, { status: 400 });
+  }
+
+  let body: {
+    meta?: { event_name?: string; custom_data?: { uid?: string } };
+    data?: { id?: string; attributes?: Record<string, unknown> };
+  };
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  try {
+    const event = body.meta?.event_name ?? '';
+    const attrs = (body.data?.attributes ?? {}) as Record<string, unknown>;
+    const subId = body.data?.id ? String(body.data.id) : undefined;
+    const customerId = attrs.customer_id != null ? String(attrs.customer_id) : undefined;
+    const userEmail = typeof attrs.user_email === 'string' ? attrs.user_email : undefined;
+
+    // Resolve the Firebase UID: prefer custom_data (set at checkout), then the
+    // customer→uid cache, then the email→uid fallback.
+    let uid = body.meta?.custom_data?.uid;
+    if (!uid && customerId) uid = (await env.APP_KV.get(`ls_customer:${customerId}`)) ?? undefined;
+    if (!uid && userEmail) uid = (await env.APP_KV.get(`email:${userEmail}`)) ?? undefined;
+    if (!uid) {
+      console.error('No Firebase UID found for Lemon Squeezy event', event, subId);
+      return Response.json({ received: true });
+    }
+
+    // Cache customer→uid for events that lack custom_data.
+    if (customerId) {
+      await env.APP_KV.put(`ls_customer:${customerId}`, uid, { expirationTtl: 60 * 60 * 24 * 365 });
+    }
+
+    const status = typeof attrs.status === 'string' ? attrs.status : '';
+    const planMap: Record<string, string> = {
+      [String(env.LEMONSQUEEZY_MONTHLY_VARIANT_ID)]: 'monthly',
+      [String(env.LEMONSQUEEZY_YEARLY_VARIANT_ID)]: 'yearly',
+    };
+    const subscriptionPlan = planMap[String(attrs.variant_id ?? '')] ?? 'monthly';
+
+    switch (event) {
+      case 'subscription_created':
+      case 'subscription_updated': {
+        await updateFirestoreUser(uid, {
+          paymentProvider: 'lemonsqueezy',
+          isPremium: status === 'active' || status === 'on_trial',
+          subscriptionPlan,
+          subscriptionStatus: mapLsStatus(status),
+          ...(customerId && { lsCustomerId: customerId }),
+          ...(subId && { lsSubscriptionId: subId }),
+        }, env);
+
+        if (event === 'subscription_created' && userEmail) {
+          sendEmail(
+            userEmail,
+            `You're now Premium — Dinner Table Cards`,
+            premiumEmailHtml(subscriptionPlan),
+            env,
+          ).catch(() => {});
+        }
+        console.log(`✅ Lemon Squeezy: user ${uid} → ${subscriptionPlan} (${status})`);
+        break;
+      }
+
+      case 'subscription_payment_success': {
+        await updateFirestoreUser(uid, {
+          isPremium: true,
+          subscriptionStatus: 'active',
+        }, env);
+        break;
+      }
+
+      case 'subscription_payment_failed': {
+        await updateFirestoreUser(uid, { subscriptionStatus: 'past_due' }, env);
+        break;
+      }
+
+      case 'subscription_cancelled': {
+        // Cancelled but not yet expired — keep access until the period ends.
+        await updateFirestoreUser(uid, { subscriptionStatus: 'canceled' }, env);
+        break;
+      }
+
+      case 'subscription_expired': {
+        await updateFirestoreUser(uid, {
+          isPremium: false,
+          subscriptionPlan: 'free',
+          subscriptionStatus: 'canceled',
+        }, env);
+        console.log(`⬇️ Lemon Squeezy: user ${uid} downgraded to free`);
+        break;
+      }
+    }
+  } catch (err: unknown) {
+    // Return 500 so Lemon Squeezy retries — handlers are idempotent.
+    console.error('Lemon Squeezy webhook handler error:', err);
     return Response.json({ received: false }, { status: 500 });
   }
 
@@ -1007,15 +1291,46 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
 
 // ── Billing Portal & Account Deletion ─────────────────────────────────────────
 
-/** Create a Stripe billing portal session so the user can manage/cancel their sub. */
+/** Open the provider's billing portal so the user can manage/cancel their sub. */
 async function handleBillingPortal(request: Request, env: Env): Promise<Response> {
-  if (!env.STRIPE_SECRET_KEY) {
-    return Response.json({ error: 'Stripe not configured' }, { status: 500 });
-  }
   const auth = await verifyIdToken(request, env);
   if (!auth) return unauthorized();
 
   const user = await getFirestoreUser(auth.uid, env);
+
+  // ── Lemon Squeezy (active provider) ────────────────────────────────────────
+  // Each subscription exposes a freshly-signed customer_portal URL (it expires),
+  // so we fetch it on demand rather than storing a stale link.
+  if (user?.paymentProvider === 'lemonsqueezy') {
+    const lsSubId = user?.lsSubscriptionId as string | undefined;
+    if (!lsSubId) {
+      return Response.json({ error: 'No subscription found' }, { status: 400 });
+    }
+    if (!env.LEMONSQUEEZY_API_KEY) {
+      return Response.json({ error: 'Lemon Squeezy not configured' }, { status: 500 });
+    }
+    try {
+      const res = await fetch(`${LS_API}/subscriptions/${lsSubId}`, { headers: lsHeaders(env) });
+      if (!res.ok) {
+        console.error('Lemon Squeezy portal error:', res.status, await res.text());
+        return Response.json({ error: 'Could not open billing portal — please try again.' }, { status: 500 });
+      }
+      const json = await res.json() as { data?: { attributes?: { urls?: { customer_portal?: string } } } };
+      const portalUrl = json.data?.attributes?.urls?.customer_portal;
+      if (!portalUrl) {
+        return Response.json({ error: 'Could not open billing portal — please try again.' }, { status: 500 });
+      }
+      return Response.json({ url: portalUrl });
+    } catch (err) {
+      console.error('Lemon Squeezy portal error:', err instanceof Error ? err.message : err);
+      return Response.json({ error: 'Could not open billing portal — please try again.' }, { status: 500 });
+    }
+  }
+
+  // ── Stripe (dormant fallback) ──────────────────────────────────────────────
+  if (!env.STRIPE_SECRET_KEY) {
+    return Response.json({ error: 'Stripe not configured' }, { status: 500 });
+  }
   const customerId = user?.stripeCustomerId as string | undefined;
   if (!customerId) {
     return Response.json({ error: 'No subscription found' }, { status: 400 });
@@ -1230,9 +1545,14 @@ function getISOWeek(date: Date): string {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 }
 
+/** Live sessions a free (non-premium) user may host per ISO week. Generous cap
+ *  to encourage usage while still preventing abuse (each session spins up a
+ *  Durable Object). Bump or set very high for effectively unlimited. */
+const FREE_WEEKLY_SESSION_LIMIT = 10;
+
 /**
  * POST /api/session/create — Create a new live session.
- * Requires Firebase auth. Enforces freemium limit (free users: 1 session/week).
+ * Requires Firebase auth. Enforces freemium limit (free users: FREE_WEEKLY_SESSION_LIMIT/week).
  * Returns { roomCode, hostToken }.
  */
 async function handleSessionCreate(request: Request, env: Env): Promise<Response> {
@@ -1240,7 +1560,7 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
   if (!auth) return unauthorized();
   const uid = auth.uid;
 
-  // Check freemium limit: free users get 1 session per ISO week
+  // Check freemium limit: free users get FREE_WEEKLY_SESSION_LIMIT sessions per ISO week
   const user = await getFirestoreUser(uid, env);
   const isPremium = (user?.isPremium as boolean) || false;
 
@@ -1248,9 +1568,9 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
     const week = getISOWeek(new Date());
     const limitKey = `session-limit:${uid}:${week}`;
     const count = parseInt((await env.APP_KV.get(limitKey)) ?? '0', 10);
-    if (count >= 1) {
+    if (count >= FREE_WEEKLY_SESSION_LIMIT) {
       return Response.json(
-        { error: 'Free users can host 1 live session per week. Upgrade for unlimited sessions.' },
+        { error: `You've hit this week's limit of ${FREE_WEEKLY_SESSION_LIMIT} live sessions. It resets next week.` },
         { status: 402 },
       );
     }
@@ -1564,6 +1884,111 @@ async function handleFeedback(request: Request, env: Env): Promise<Response> {
   }
 
   return Response.json({ ok: true });
+}
+
+/**
+ * POST /api/feedback-unlock — Signed-in users who hit their free limit can
+ * submit feedback in exchange for a one-time batch of free (bonus) questions.
+ * Stores the feedback, emails the owner, and credits the user's profile.
+ * Body: { text, rating? }
+ */
+const FEEDBACK_UNLOCK_BONUS = 25; // free questions granted for feedback (one-time)
+
+async function handleFeedbackUnlock(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+
+  let body: { text?: string; rating?: number };
+  try {
+    body = await request.json() as typeof body;
+  } catch {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const text = (body.text || '').trim().slice(0, 1000);
+  if (text.length < 3) {
+    return Response.json({ error: 'Please share a little more feedback.' }, { status: 400 });
+  }
+  const rating = typeof body.rating === 'number' ? Math.min(5, Math.max(1, body.rating)) : null;
+
+  // Read current profile to decide whether to grant the (one-time) bonus.
+  let alreadyRewarded = false;
+  let currentBonus = 0;
+  try {
+    const profile = await getFirestoreUser(auth.uid, env);
+    alreadyRewarded = profile?.feedbackRewarded === true;
+    currentBonus = typeof profile?.bonusQuestions === 'number' ? profile.bonusQuestions as number : 0;
+  } catch (err) {
+    console.error('feedback-unlock: profile read failed', err);
+  }
+
+  let granted = 0;
+  let newBonus = currentBonus;
+  if (!alreadyRewarded) {
+    granted = FEEDBACK_UNLOCK_BONUS;
+    newBonus = currentBonus + granted;
+    try {
+      await updateFirestoreUser(auth.uid, {
+        bonusQuestions: newBonus,
+        feedbackRewarded: true,
+      }, env);
+    } catch (err) {
+      console.error('feedback-unlock: grant failed', err);
+      return Response.json({ error: 'Could not apply your free questions — please try again.' }, { status: 500 });
+    }
+  }
+
+  // Store the feedback (best-effort) so it shows up in the admin dashboard.
+  try {
+    const token = await getFirestoreToken(env);
+    const docId = crypto.randomUUID();
+    const dbPath = `projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents/feedback/${docId}`;
+    const fields: Record<string, unknown> = {
+      text: { stringValue: text },
+      createdAt: { timestampValue: new Date().toISOString() },
+      source: { stringValue: 'limit-unlock' },
+      uid: { stringValue: auth.uid },
+    };
+    if (rating) fields.rating = { integerValue: String(rating) };
+    if (auth.email) fields.email = { stringValue: auth.email };
+    await fetch(`https://firestore.googleapis.com/v1/${dbPath}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+    });
+  } catch (err) {
+    console.error('feedback-unlock: store failed', err);
+  }
+
+  // Email the owner (best-effort).
+  if (env.RESEND_API_KEY) {
+    try {
+      const subject = `[DTC Feedback] ${rating ? '★'.repeat(rating) : 'New'} (limit unlock) — ${text.slice(0, 50)}`;
+      const htmlBody = `
+        <h2>New Feedback (free-questions unlock)</h2>
+        <p><strong>Rating:</strong> ${rating ? '★'.repeat(rating) + '☆'.repeat(5 - rating) : 'Not rated'}</p>
+        <p><strong>Message:</strong></p>
+        <blockquote style="border-left:3px solid #5A5A40;padding-left:12px;color:#333;">${text}</blockquote>
+        ${auth.email ? `<p><strong>From:</strong> <a href="mailto:${auth.email}">${auth.email}</a></p>` : ''}
+        <p><strong>Granted:</strong> ${granted} free questions ${alreadyRewarded ? '(already rewarded earlier — none added)' : ''}</p>
+        <p style="color:#999;font-size:12px;">uid: ${auth.uid} | ${new Date().toISOString()}</p>
+      `;
+      await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: env.RESEND_FROM || 'Dinner Table Cards <noreply@dinnertablecards.xyz>',
+          to: 'contentcreatordarsh@gmail.com',
+          subject,
+          html: htmlBody,
+        }),
+      });
+    } catch (err) {
+      console.error('feedback-unlock: email failed', err);
+    }
+  }
+
+  return Response.json({ ok: true, granted, bonusQuestions: newBonus, alreadyRewarded });
 }
 
 // ── Stats endpoint ───────────────────────────────────────────────────────────

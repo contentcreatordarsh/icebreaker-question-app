@@ -67,6 +67,12 @@ export interface UserProfile {
   referredBy?: string;
   referralCount?: number;
   bonusQuestions?: number;
+  feedbackRewarded?: boolean;
+  // Payment provider linkage (written server-side by webhooks)
+  paymentProvider?: 'stripe' | 'lemonsqueezy';
+  stripeCustomerId?: string;
+  lsCustomerId?: string;
+  lsSubscriptionId?: string;
 }
 
 // ── Live Session (Kahoot-style game) ────────────────────────────────────────
