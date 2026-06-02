@@ -5,6 +5,7 @@ import { motion, useInView } from 'motion/react';
 import Logo from '../components/Logo';
 import { fadeUp, staggerContainer, pop } from '../lib/animations';
 import TrustSignals from '../components/TrustSignals';
+import { TOPICS } from '../data/topics';
 
 interface LandingProps {
   onSignIn: () => void;
@@ -25,18 +26,19 @@ const PREMIUM_CATEGORIES = [
   { name: 'Creative Sparks', emoji: '🎨', tagline: '63 imaginative what-ifs', desc: 'Open new ways of thinking together.' },
 ];
 
-const TESTIMONIALS = [
+// Honest use-case framing (not fabricated testimonials).
+const USE_CASES = [
   {
-    quote: "We use it every team lunch. The deep-talk ones always catch someone off guard — in the best way.",
-    who: "Engineering team, 11 people",
+    title: "At the dinner table",
+    body: "Replace 'how was your day?' with a question that actually goes somewhere — and watch everyone put their phones down.",
   },
   {
-    quote: "Finally something better than 'how was your weekend?' at dinner parties. My guests actually stayed to talk.",
-    who: "Couple, 4 years together",
+    title: "On a date",
+    body: "Skip the small talk. Find out what makes someone tick before the mains even arrive.",
   },
   {
-    quote: "My family of 5 has a rule now — one question per Sunday dinner. It changed everything.",
-    who: "Parent of three, Chicago",
+    title: "With the team",
+    body: "Real connection without the forced-fun cringe. Deep-talk prompts that make a lunch worth remembering.",
   },
 ];
 
@@ -138,18 +140,18 @@ export default function Landing({ onSignIn }: LandingProps) {
               </Link>
             </motion.div>
             {/* Trust signals */}
-            <motion.div variants={fadeUp} className="flex items-center gap-6 mt-6 pt-6 border-t border-brand/5">
-              <div className="flex items-center gap-1.5">
-                <Users size={12} className="opacity-40" />
-                <span className="text-[10px] caps-tracking opacity-40">500+ players joined</span>
-              </div>
+            <motion.div variants={fadeUp} className="flex flex-wrap items-center gap-x-6 gap-y-2 mt-6 pt-6 border-t border-brand/5">
               <div className="flex items-center gap-1.5">
                 <MessageSquare size={12} className="opacity-40" />
-                <span className="text-[10px] caps-tracking opacity-40">600+ questions</span>
+                <span className="text-[10px] caps-tracking opacity-40">1,000+ questions</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Users size={12} className="opacity-40" />
+                <span className="text-[10px] caps-tracking opacity-40">Live multiplayer sessions</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <Star size={10} className="opacity-40 fill-current" />
-                <span className="text-[10px] caps-tracking opacity-40">4.9 rating</span>
+                <span className="text-[10px] caps-tracking opacity-40">Free · works offline</span>
               </div>
             </motion.div>
           </motion.div>
@@ -265,16 +267,44 @@ export default function Landing({ onSignIn }: LandingProps) {
           </div>
         </section>
 
-        {/* ── Social proof ─────────────────────────────────────────────────── */}
+        {/* ── Topics showcase ──────────────────────────────────────────────── */}
         <section className="py-14 md:py-16 border-b border-brand/10">
-          <span className="caps-tracking opacity-40 block mb-8">What people are saying</span>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {TESTIMONIALS.map((t, i) => (
-              <div key={i} className="border border-brand/10 p-8 hover:border-brand/20 transition-colors">
-                <p className="font-serif text-lg italic leading-relaxed text-brand mb-5">
-                  "{t.quote}"
+          <span className="caps-tracking opacity-40 block mb-2 text-accent">New · Explore by topic</span>
+          <h2 className="font-serif text-2xl md:text-3xl italic text-brand mb-3">
+            Conversations about what you actually love
+          </h2>
+          <p className="text-sm opacity-50 mb-8 max-w-lg">
+            Beyond the classics — dive into Sports, Movies, Music, and more, each with its own
+            sub-topics. Free to explore.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {TOPICS.map(g => (
+              <div
+                key={g.id}
+                onClick={onSignIn}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter') onSignIn(); }}
+                className="border border-brand/10 p-5 hover:border-brand/25 transition-colors cursor-pointer"
+              >
+                <span className="text-2xl mb-3 block" aria-hidden>{g.emoji}</span>
+                <h3 className="font-serif text-base italic mb-2 text-brand">{g.label}</h3>
+                <p className="text-[11px] caps-tracking opacity-40 leading-relaxed">
+                  {g.children.map(c => c.label).join(' · ')}
                 </p>
-                <span className="caps-tracking text-[10px] opacity-40">— {t.who}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ── Made for these moments ───────────────────────────────────────── */}
+        <section className="py-14 md:py-16 border-b border-brand/10">
+          <span className="caps-tracking opacity-40 block mb-8">Made for these moments</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {USE_CASES.map((u, i) => (
+              <div key={i} className="border border-brand/10 p-8 hover:border-brand/20 transition-colors">
+                <h3 className="font-serif text-xl italic text-brand mb-3">{u.title}</h3>
+                <p className="text-sm leading-relaxed opacity-60">{u.body}</p>
               </div>
             ))}
           </div>
