@@ -473,7 +473,7 @@ export default function QuestionDisplay({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="relative py-12"
+          className="relative py-12 md:py-16 px-6 md:px-10 rounded-lg bg-white/30 border border-brand/[0.07] shadow-[0_1px_30px_-12px_rgba(26,26,26,0.15)]"
         >
           <span className="caps-tracking opacity-40 mb-12 block">The Daily Provocation</span>
 

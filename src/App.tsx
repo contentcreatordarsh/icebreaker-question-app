@@ -439,6 +439,14 @@ export default function App() {
                       </span>
                     </div>
                   </button>
+                  {(userProfile?.currentStreak ?? 0) > 0 && (
+                    <span
+                      className="caps-tracking text-[10px] opacity-60 flex items-center gap-1"
+                      title={`${userProfile?.currentStreak}-day streak`}
+                    >
+                      🔥 {userProfile?.currentStreak}
+                    </span>
+                  )}
                   <button onClick={() => auth.signOut()} className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-1.5">
                     <LogOut size={11} /> Out
                   </button>
