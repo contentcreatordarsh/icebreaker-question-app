@@ -5,6 +5,7 @@ import { motion, useInView } from 'motion/react';
 import Logo from '../components/Logo';
 import { fadeUp, staggerContainer, pop } from '../lib/animations';
 import TrustSignals from '../components/TrustSignals';
+import WorldStats from '../components/WorldStats';
 import { TOPICS } from '../data/topics';
 
 interface LandingProps {
@@ -189,8 +190,11 @@ export default function Landing({ onSignIn }: LandingProps) {
           </div>
         </section>
 
-        {/* ── Live Trust Signals (dynamic counters) ─────────────────────── */}
+        {/* ── Live Trust Signals (real, dynamic counters) ───────────────── */}
         <TrustSignals />
+        <div className="-mt-2 pb-6 flex justify-center">
+          <WorldStats variant="strip" />
+        </div>
 
         {/* ── How it works ─────────────────────────────────────────────────── */}
         <section id="how-it-works" className="py-14 md:py-16 border-b border-brand/10">
@@ -296,6 +300,9 @@ export default function Landing({ onSignIn }: LandingProps) {
             ))}
           </div>
         </section>
+
+        {/* ── Live: around the world (real Cloudflare edge-geo) ────────────── */}
+        <WorldStats variant="section" />
 
         {/* ── Made for these moments ───────────────────────────────────────── */}
         <section className="py-14 md:py-16 border-b border-brand/10">

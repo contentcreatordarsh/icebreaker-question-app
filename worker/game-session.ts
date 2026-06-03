@@ -43,7 +43,8 @@ interface SessionState {
 }
 
 interface WsAttachment {
-  playerId: string;
+  playerId?: string;
+  country?: string; // ISO 3166-1 alpha-2, captured from Cloudflare edge at upgrade
 }
 
 // ── Client → Server messages ───────────────────────────────────────────────────
@@ -153,19 +154,30 @@ export class GameSession implements DurableObject {
   // After hibernation wake, this.state.getWebSockets() returns live connections
   // and ws.deserializeAttachment() returns the stored playerId.
 
-  /** Get the playerId for a WebSocket (from its attachment). */
-  private getPlayerId(ws: WebSocket): string | null {
+  /** Read the full attachment (playerId + country) for a WebSocket. */
+  private getAttachment(ws: WebSocket): WsAttachment | null {
     try {
-      const att = (ws as unknown as { deserializeAttachment(): WsAttachment | null }).deserializeAttachment();
-      return att?.playerId ?? null;
+      return (ws as unknown as { deserializeAttachment(): WsAttachment | null }).deserializeAttachment();
     } catch {
       return null;
     }
   }
 
-  /** Store the playerId on a WebSocket (survives hibernation). */
+  /** Get the playerId for a WebSocket (from its attachment). */
+  private getPlayerId(ws: WebSocket): string | null {
+    return this.getAttachment(ws)?.playerId ?? null;
+  }
+
+  /** Store the country on a WebSocket at upgrade time (before a player joins). */
+  private setCountry(ws: WebSocket, country: string): void {
+    const att = this.getAttachment(ws) ?? {};
+    (ws as unknown as { serializeAttachment(att: WsAttachment): void }).serializeAttachment({ ...att, country });
+  }
+
+  /** Store the playerId on a WebSocket (survives hibernation), preserving country. */
   private setPlayerId(ws: WebSocket, playerId: string): void {
-    (ws as unknown as { serializeAttachment(att: WsAttachment): void }).serializeAttachment({ playerId });
+    const att = this.getAttachment(ws) ?? {};
+    (ws as unknown as { serializeAttachment(att: WsAttachment): void }).serializeAttachment({ ...att, playerId });
   }
 
   /** Get the WebSocket for a given playerId (searches all live connections). */
@@ -232,6 +244,11 @@ export class GameSession implements DurableObject {
 
     // Accept with hibernation API
     this.state.acceptWebSocket(server);
+
+    // Stash the country (passed by the Worker from Cloudflare edge geo) on the
+    // socket so handleJoin can count it per real player join.
+    const country = (url.searchParams.get('c') || '').toUpperCase();
+    if (/^[A-Z]{2}$/.test(country)) this.setCountry(server, country);
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -434,6 +451,11 @@ export class GameSession implements DurableObject {
     if (!isHost) {
       this.incrementStat('stats:players_total');
       this.incrementStat(`daily:players:${new Date().toISOString().slice(0, 10)}`);
+      // Count where this player joined from (Cloudflare edge geo, stashed at upgrade).
+      const country = this.getAttachment(ws)?.country;
+      if (country && /^[A-Z]{2}$/.test(country)) {
+        this.incrementStat(`stats:country:${country}`);
+      }
     }
 
     await this.persist();

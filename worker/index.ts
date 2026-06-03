@@ -1630,9 +1630,14 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
     console.error('Failed to store session history:', err);
   });
 
-  // Increment global stats counters (non-blocking)
-  incrementStat(env, 'stats:sessions_total').catch(() => {});
-  incrementStat(env, `daily:sessions:${new Date().toISOString().slice(0, 10)}`).catch(() => {});
+  // Increment global stats counters. Must be AWAITED — a fire-and-forget KV write
+  // in the Worker fetch handler gets cancelled when the response returns (unlike
+  // the DO, which stays alive). KV ops are fast; the small latency is worth a
+  // correct counter.
+  await Promise.all([
+    incrementStat(env, 'stats:sessions_total'),
+    incrementStat(env, `daily:sessions:${new Date().toISOString().slice(0, 10)}`),
+  ]).catch(() => { /* non-critical */ });
 
   return Response.json({ roomCode, hostToken });
 }
@@ -1702,8 +1707,16 @@ async function handleSessionWebSocket(request: Request, env: Env): Promise<Respo
   const doId = env.GAME_SESSIONS.idFromString(doIdStr);
   const stub = env.GAME_SESSIONS.get(doId);
 
-  // Forward the WebSocket upgrade request to the DO
-  return stub.fetch(request);
+  // Capture the player's country from Cloudflare's edge geo (only available at
+  // the HTTP layer, not inside the DO's WebSocket message handlers). Pass it to
+  // the DO via the URL so it can be counted per real player join.
+  const cf = (request as unknown as { cf?: { country?: string } }).cf;
+  const country = (cf?.country || request.headers.get('cf-ipcountry') || '').toUpperCase();
+  const fwdUrl = new URL(request.url);
+  if (/^[A-Z]{2}$/.test(country)) fwdUrl.searchParams.set('c', country);
+
+  // Forward the WebSocket upgrade request to the DO (preserving upgrade headers).
+  return stub.fetch(new Request(fwdUrl.toString(), request));
 }
 
 // ── Workers AI — "Surprise Me" question generation ────────────────────────────
@@ -2004,10 +2017,30 @@ async function handleStats(env: Env): Promise<Response> {
     env.APP_KV.get('stats:questions_total'),
   ]);
 
+  // Aggregate per-country join counts: prefix-scan KV, then batch-read values.
+  // Eventually consistent + slightly costly, so the 60s cache below covers it.
+  let countries: { code: string; count: number }[] = [];
+  try {
+    const list = await env.APP_KV.list({ prefix: 'stats:country:' });
+    const PREFIX = 'stats:country:';
+    const entries = await Promise.all(
+      list.keys.map(async (k) => ({
+        code: k.name.slice(PREFIX.length),
+        count: parseInt((await env.APP_KV.get(k.name)) ?? '0', 10),
+      })),
+    );
+    countries = entries
+      .filter(e => /^[A-Z]{2}$/.test(e.code) && e.count > 0)
+      .sort((a, b) => b.count - a.count);
+  } catch { /* non-critical — return totals without country breakdown */ }
+
   return Response.json({
-    sessions: parseInt(sessions ?? '0', 10) + 50,   // seed with baseline
-    players: parseInt(players ?? '0', 10) + 200,    // seed with baseline
-    questions: parseInt(questions ?? '0', 10) + 600, // seed with baseline (question bank)
+    // Real, un-seeded counts — auto-increment as people actually use the app.
+    sessions: parseInt(sessions ?? '0', 10),
+    players: parseInt(players ?? '0', 10),
+    questions: parseInt(questions ?? '0', 10),
+    countries,
+    topCountry: countries[0]?.code ?? null,
   }, {
     headers: { 'Cache-Control': 'public, max-age=60' }, // cache 1 min
   });

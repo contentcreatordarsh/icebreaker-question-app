@@ -49,8 +49,7 @@ export default function TrustSignals() {
       .then(data => setStats(data as typeof stats))
       .catch(err => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        // Fallback stats if API fails
-        setStats({ sessions: 50, players: 200, questions: 600 });
+        // On failure, render nothing rather than invent numbers (stats stays null).
       });
     return () => controller.abort();
   }, []);
