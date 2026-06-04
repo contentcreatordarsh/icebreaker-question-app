@@ -665,6 +665,17 @@ export class GameSession implements DurableObject {
     this.broadcast({ type: 'session_ended' });
     await this.persist();
 
+    // Record real play duration for "avg playing time" — only for sessions that
+    // were actually played (>=1 question) and explicitly ended, within sane bounds
+    // (so abandoned/auto-expired rooms don't inflate the average).
+    if (this.gameState.questionCount > 0) {
+      const secs = Math.round((Date.now() - new Date(this.gameState.createdAt).getTime()) / 1000);
+      if (secs >= 20 && secs <= 6 * 3600) {
+        this.addStat('stats:play_seconds_total', secs);
+        this.addStat('stats:play_count', 1);
+      }
+    }
+
     // Store session summary in KV for history endpoint
     if (this.env.APP_KV) {
       const playerCount = Object.keys(this.gameState.players).length;
@@ -957,10 +968,15 @@ export class GameSession implements DurableObject {
 
   /** Increment a KV stat counter (fire-and-forget). */
   private incrementStat(key: string): void {
+    this.addStat(key, 1);
+  }
+
+  /** Add an arbitrary amount to a KV stat counter (fire-and-forget). */
+  private addStat(key: string, amount: number): void {
     if (!this.env.APP_KV) return;
     this.env.APP_KV.get(key).then(val => {
       const current = parseInt(val ?? '0', 10);
-      this.env.APP_KV!.put(key, String(current + 1));
+      this.env.APP_KV!.put(key, String(current + amount));
     }).catch(() => { /* non-critical */ });
   }
 

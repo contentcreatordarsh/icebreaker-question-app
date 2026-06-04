@@ -2021,11 +2021,18 @@ async function handleFeedbackUnlock(request: Request, env: Env): Promise<Respons
  * Returns aggregate counters from KV.
  */
 async function handleStats(env: Env): Promise<Response> {
-  const [sessions, players, questions] = await Promise.all([
+  const [sessions, players, questions, playSeconds, playCount] = await Promise.all([
     env.APP_KV.get('stats:sessions_total'),
     env.APP_KV.get('stats:players_total'),
     env.APP_KV.get('stats:questions_total'),
+    env.APP_KV.get('stats:play_seconds_total'),
+    env.APP_KV.get('stats:play_count'),
   ]);
+
+  // Average playing time across real, completed sessions (null until we have data).
+  const pSecs = parseInt(playSeconds ?? '0', 10);
+  const pCount = parseInt(playCount ?? '0', 10);
+  const avgPlaySeconds = pCount > 0 ? Math.round(pSecs / pCount) : null;
 
   // Aggregate per-country join counts: prefix-scan KV, then batch-read values.
   // Eventually consistent + slightly costly, so the 60s cache below covers it.
@@ -2049,6 +2056,7 @@ async function handleStats(env: Env): Promise<Response> {
     sessions: parseInt(sessions ?? '0', 10),
     players: parseInt(players ?? '0', 10),
     questions: parseInt(questions ?? '0', 10),
+    avgPlaySeconds,
     countries,
     topCountry: countries[0]?.code ?? null,
   }, {
