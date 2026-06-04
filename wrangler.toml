@@ -7,6 +7,14 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./dist"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
+# Run the Worker first for the root document so addSecurityHeaders() applies its
+# CSP/HSTS/X-Frame-Options to index.html too. Without this, Workers Assets serves
+# matching static files (e.g. "/" -> index.html) directly, bypassing the Worker —
+# which left the most-visited page with NO security headers. SPA routes (/play,
+# /privacy, …) already fall through to the Worker. Other static assets (hashed
+# JS/CSS/icons) are still served directly from edge cache; CSP/HSTS only matter on
+# the HTML document, which this covers.
+run_worker_first = ["/", "/index.html"]
 
 # Non-secret runtime vars
 [vars]
