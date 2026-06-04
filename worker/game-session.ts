@@ -92,19 +92,9 @@ const MAX_ANSWER_LENGTH = 500;
 const MAX_NAME_LENGTH = 30;
 const MAX_QUESTION_LENGTH = 500;
 
-/**
- * Defense-in-depth HTML escaping for user-supplied text.
- * The frontend uses React (which auto-escapes), but this protects against
- * any future use of innerHTML or non-React consumers.
- */
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+// Note: user text (names, questions, answers) is rendered exclusively through
+// React text nodes on the client, which auto-escape — so we intentionally do NOT
+// HTML-entity-encode it here (doing so caused apostrophes to render as "&#39;").
 
 // ── Durable Object ─────────────────────────────────────────────────────────────
 
@@ -377,7 +367,7 @@ export class GameSession implements DurableObject {
   // ── Message Handlers ───────────────────────────────────────────────────────
 
   private async handleJoin(ws: WebSocket, msg: { type: 'join'; name: string; hostToken?: string; gender?: string; avatar?: string }): Promise<void> {
-    const name = escapeHtml((msg.name || '').trim().slice(0, MAX_NAME_LENGTH));
+    const name = (msg.name || '').trim().slice(0, MAX_NAME_LENGTH);
     if (!name) {
       this.send(ws, { type: 'error', message: 'Name is required' });
       return;
@@ -472,7 +462,7 @@ export class GameSession implements DurableObject {
       return;
     }
 
-    const text = escapeHtml((msg.text || '').trim().slice(0, MAX_QUESTION_LENGTH));
+    const text = (msg.text || '').trim().slice(0, MAX_QUESTION_LENGTH);
     if (!text) {
       this.sendError(playerId, 'Question text is required');
       return;
@@ -524,7 +514,7 @@ export class GameSession implements DurableObject {
       return;
     }
 
-    const answer = escapeHtml((msg.answer || '').trim().slice(0, MAX_ANSWER_LENGTH));
+    const answer = (msg.answer || '').trim().slice(0, MAX_ANSWER_LENGTH);
     if (!answer) {
       this.sendError(playerId, 'Answer cannot be empty');
       return;
@@ -668,11 +658,21 @@ export class GameSession implements DurableObject {
     // Record real play duration for "avg playing time" — only for sessions that
     // were actually played (>=1 question) and explicitly ended, within sane bounds
     // (so abandoned/auto-expired rooms don't inflate the average).
-    if (this.gameState.questionCount > 0) {
+    // AWAITED: a fire-and-forget KV write here would be cancelled as the DO goes
+    // idle right after End Session closes all sockets.
+    if (this.env.APP_KV && this.gameState.questionCount > 0) {
       const secs = Math.round((Date.now() - new Date(this.gameState.createdAt).getTime()) / 1000);
       if (secs >= 20 && secs <= 6 * 3600) {
-        this.addStat('stats:play_seconds_total', secs);
-        this.addStat('stats:play_count', 1);
+        try {
+          const [curS, curC] = await Promise.all([
+            this.env.APP_KV.get('stats:play_seconds_total'),
+            this.env.APP_KV.get('stats:play_count'),
+          ]);
+          await Promise.all([
+            this.env.APP_KV.put('stats:play_seconds_total', String(parseInt(curS ?? '0', 10) + secs)),
+            this.env.APP_KV.put('stats:play_count', String(parseInt(curC ?? '0', 10) + 1)),
+          ]);
+        } catch { /* non-critical */ }
       }
     }
 
