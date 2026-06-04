@@ -6,6 +6,7 @@ import App from './App.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import OfflineIndicator from './components/OfflineIndicator.tsx';
 import { auth, getRedirectResult } from './lib/firebase';
+import './lib/sentry'; // initialise error monitoring early (no-op without a DSN)
 import './index.css';
 
 // Register the Workbox service worker via vite-plugin-pwa's auto-update module.

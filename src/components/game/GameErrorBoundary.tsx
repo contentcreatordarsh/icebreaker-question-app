@@ -1,4 +1,5 @@
 import React from 'react';
+import { captureError } from '../../lib/sentry';
 
 interface Props { children: React.ReactNode; fallbackMessage?: string }
 interface State { hasError: boolean; message: string }
@@ -20,6 +21,7 @@ export default class GameErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: unknown, info: React.ErrorInfo) {
     console.error('[GameErrorBoundary]', error, info);
+    captureError(error, { componentStack: info.componentStack, boundary: 'GameErrorBoundary' });
   }
 
   render() {

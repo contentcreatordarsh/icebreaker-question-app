@@ -1,5 +1,6 @@
 import Stripe from 'stripe';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
+import * as Sentry from '@sentry/cloudflare';
 
 // Re-export Durable Object class so wrangler can discover it from the entrypoint.
 export { GameSession } from './game-session';
@@ -34,6 +35,8 @@ interface Env {
   // Email — optional; app works without them (emails silently skipped)
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;   // e.g. "Dinner Table Cards <noreply@yourdomain.com>"
+  // Error monitoring (optional — no-op when unset). Set via `wrangler secret put SENTRY_DSN`.
+  SENTRY_DSN?: string;
   // (ADMIN_SECRET removed — admin routes now require a Firebase ID token from an admin email)
 }
 
@@ -118,7 +121,7 @@ function addSecurityHeaders(response: Response): Response {
     "connect-src 'self' wss: https://firestore.googleapis.com https://securetoken.googleapis.com " +
       "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com " +
       "https://apis.google.com https://www.googleapis.com " +
-      "https://cloudflareinsights.com; " +
+      "https://cloudflareinsights.com https://*.sentry.io; " +
     "img-src 'self' https://lh3.googleusercontent.com data:; " +
     // Firebase Auth loads its helper iframe from the authDomain (now our own
     // origin, 'self', i.e. /__/auth/iframe) plus a gapi relay iframe from
@@ -326,7 +329,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   return env.ASSETS.fetch(request);
 }
 
-export default {
+const handler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
@@ -390,6 +393,13 @@ export default {
     await resetMonthlyUsage(env);
   },
 } satisfies ExportedHandler<Env>;
+
+// Wrap with Sentry so any unhandled exception in fetch/scheduled is reported.
+// No-op when SENTRY_DSN is unset (graceful before the owner wires it up).
+export default Sentry.withSentry(
+  (env: Env) => ({ dsn: env.SENTRY_DSN, tracesSampleRate: 0 }),
+  handler,
+);
 
 // ── Stripe Checkout ───────────────────────────────────────────────────────────
 

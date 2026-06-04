@@ -64,6 +64,7 @@ crons = ["0 0 1 * *"]
 #   FIREBASE_SERVICE_ACCOUNT_EMAIL
 #   FIREBASE_PRIVATE_KEY
 #   RESEND_API_KEY  ← get from resend.com/api-keys (emails silently skipped until set)
+#   SENTRY_DSN      ← optional error monitoring; unhandled worker errors reported when set
 #
 # Build-time VITE_ vars (set in .env locally or Cloudflare build environment):
 #   VITE_LEMONSQUEEZY_MONTHLY_VARIANT_ID
