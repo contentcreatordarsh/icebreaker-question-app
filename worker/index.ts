@@ -68,7 +68,10 @@ const ALLOWED_ORIGINS = [
  * Verify a Firebase ID token from the Authorization: Bearer header.
  * Returns { uid, email } on success, or null if missing/invalid.
  */
-async function verifyIdToken(request: Request, env: Env): Promise<{ uid: string; email: string | null } | null> {
+async function verifyIdToken(
+  request: Request,
+  env: Env,
+): Promise<{ uid: string; email: string | null; emailVerified: boolean } | null> {
   const authHeader = request.headers.get('Authorization') ?? '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (!match) return null;
@@ -77,9 +80,17 @@ async function verifyIdToken(request: Request, env: Env): Promise<{ uid: string;
     const { payload } = await jwtVerify(match[1], FIREBASE_JWKS, {
       issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
       audience: env.FIREBASE_PROJECT_ID,
+      // Pin the signing algorithm: Firebase ID tokens are always RS256. Explicitly
+      // restricting it blocks algorithm-confusion attacks (e.g. forged "alg":"none"
+      // or HS256 tokens signed with the public key).
+      algorithms: ['RS256'],
     });
     if (!payload.sub) return null;
-    return { uid: payload.sub, email: (payload.email as string) ?? null };
+    return {
+      uid: payload.sub,
+      email: (payload.email as string) ?? null,
+      emailVerified: payload.email_verified === true,
+    };
   } catch (err) {
     console.error('ID token verification failed:', err instanceof Error ? err.message : err);
     return null;
@@ -89,6 +100,27 @@ async function verifyIdToken(request: Request, env: Env): Promise<{ uid: string;
 /** Helper to return a 401 JSON response. */
 function unauthorized(): Response {
   return Response.json({ error: 'Unauthorized' }, { status: 401 });
+}
+
+/**
+ * Gate for owner-only endpoints. Returns the verified admin identity, or a ready
+ * Response (401/403) to return directly. Requires, in order: a valid Firebase ID
+ * token (verifyIdToken), a *verified* email, and membership in ADMIN_EMAILS. This
+ * is the single source of truth for admin authorization — every /api/admin/*
+ * handler funnels through it so the checks can never drift apart.
+ */
+type AdminAuth = { uid: string; email: string | null; emailVerified: boolean };
+
+async function requireAdmin(request: Request, env: Env): Promise<AdminAuth | Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+  const email = auth.email ?? '';
+  if (!auth.emailVerified || !ADMIN_EMAILS.includes(email)) {
+    // Log denied attempts for observability (allowed attempts are uninteresting noise).
+    console.warn(`[admin] denied: uid=${auth.uid} email=${email || '(none)'} verified=${auth.emailVerified}`);
+    return Response.json({ error: 'Forbidden' }, { status: 403 });
+  }
+  return auth;
 }
 
 /**
@@ -1429,12 +1461,8 @@ const ADMIN_EMAILS = ['darshan.p.hegde@gmail.com'];
  * Useful after testing to unblock yourself without touching the Firebase Console.
  */
 async function handleAdminResetUsage(request: Request, env: Env): Promise<Response> {
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-
-  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
-    return Response.json({ error: 'Forbidden' }, { status: 403 });
-  }
+  const auth = await requireAdmin(request, env);
+  if (auth instanceof Response) return auth;
 
   let body: { uid?: string } = {};
   try { body = await request.json(); } catch { /* empty body ok */ }
@@ -2096,11 +2124,8 @@ async function kvPrefixCounts(env: Env, prefix: string): Promise<{ key: string; 
  * prompts), feedback rating distribution, and registered-user / usage stats.
  */
 async function handleAdminDashboardStats(request: Request, env: Env): Promise<Response> {
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
-    return Response.json({ error: 'Forbidden' }, { status: 403 });
-  }
+  const admin = await requireAdmin(request, env);
+  if (admin instanceof Response) return admin;
 
   const int = (v: string | null) => parseInt(v ?? '0', 10);
 
@@ -2285,11 +2310,8 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
  * Query param: ?limit=20 (default 20, max 50)
  */
 async function handleAdminFeedbackList(request: Request, env: Env): Promise<Response> {
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
-    return Response.json({ error: 'Forbidden' }, { status: 403 });
-  }
+  const admin = await requireAdmin(request, env);
+  if (admin instanceof Response) return admin;
 
   const url = new URL(request.url);
   const limit = Math.min(50, parseInt(url.searchParams.get('limit') || '20', 10));
