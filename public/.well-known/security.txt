@@ -1,0 +1,8 @@
+# Security policy for dinnertablecards.xyz (RFC 9116)
+# If you've found a security issue, please report it to the contact below.
+# We aim to acknowledge reports within 72 hours.
+
+Contact: mailto:contentcreatordarsh@gmail.com
+Expires: 2027-06-06T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://dinnertablecards.xyz/.well-known/security.txt
