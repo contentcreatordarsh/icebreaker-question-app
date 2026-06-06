@@ -367,6 +367,35 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return handleAdminFeedbackList(request, env);
   }
 
+  // ── Dynamic Open Graph for live-game share surfaces ────────────────────────
+  // Room invites (/play/<code>) and the recap card (/play?q=&p=) must link to the
+  // real SPA route so clicking joins/plays — so instead of a separate /q-style
+  // page, we rewrite the SPA index.html's OG/Twitter meta on the fly. Humans get
+  // the full app; crawlers (FB, LinkedIn, WhatsApp, iMessage, Slack) get a rich,
+  // session-specific preview — consistent with /q.
+  const playMatch = url.pathname.match(/^\/play(?:\/([A-Za-z0-9]{4,8}))?\/?$/);
+  if (playMatch && request.method === 'GET') {
+    const resp = await env.ASSETS.fetch(request);
+    if ((resp.headers.get('content-type') || '').includes('text/html')) {
+      const code = (playMatch[1] || '').toUpperCase();
+      const q = parseInt(url.searchParams.get('q') || '', 10);
+      const p = parseInt(url.searchParams.get('p') || '', 10);
+      let title: string, description: string;
+      if (code) {
+        title = 'Join my Dinner Table Cards game';
+        description = `Room ${code} · tap to join the live conversation game — no app, no sign-up.`;
+      } else if (q > 0 && p > 0) {
+        title = 'We just played Dinner Table Cards!';
+        description = `${q} question${q === 1 ? '' : 's'} · ${p} player${p === 1 ? '' : 's'}. Start your own free live conversation game.`;
+      } else {
+        title = 'Play Dinner Table Cards — live conversation game';
+        description = 'Host a live, Kahoot-style conversation game. Everyone answers, everyone connects. Free — no app, no sign-up.';
+      }
+      return injectOpenGraph(resp, { title, description, url: `https://dinnertablecards.xyz${url.pathname}${url.search}` });
+    }
+    return resp;
+  }
+
   return env.ASSETS.fetch(request);
 }
 
@@ -2176,6 +2205,32 @@ function handleQuestionShare(url: URL): Response {
       'Cache-Control': 'public, max-age=3600',
     },
   });
+}
+
+/**
+ * Rewrites the SPA index.html's social meta on the fly so a given route gets a
+ * route-specific Open Graph / Twitter Card preview. HTMLRewriter encodes the
+ * values it sets (attribute + text), so no manual escaping is required.
+ */
+function injectOpenGraph(
+  response: Response,
+  meta: { title: string; description: string; url: string },
+): Response {
+  const setMeta = {
+    element(el: Element) {
+      const key = el.getAttribute('property') ?? el.getAttribute('name');
+      if (key === 'og:title' || key === 'twitter:title') el.setAttribute('content', meta.title);
+      else if (key === 'og:description' || key === 'twitter:description' || key === 'description') {
+        el.setAttribute('content', meta.description);
+      } else if (key === 'og:url') el.setAttribute('content', meta.url);
+    },
+  };
+  const setTitle = {
+    element(el: Element) {
+      el.setInnerContent(`${meta.title} · Dinner Table Cards`);
+    },
+  };
+  return new HTMLRewriter().on('meta', setMeta).on('title', setTitle).transform(response);
 }
 
 /**

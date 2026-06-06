@@ -177,9 +177,12 @@ export default function RecapCard(props: RecapCardProps) {
     const blob = await toBlob();
     if (!blob) return;
     const file = new File([blob], `dinner-table-cards-recap.png`, { type: 'image/png' });
+    // Session-summary URL so the link preview (FB/LinkedIn/iMessage) is dynamic —
+    // the worker renders OG "We just played … N questions, P players" for /play?q&p.
+    const recapUrl = `https://dinnertablecards.xyz/play?q=${props.questionsPlayed}&p=${props.playerCount}`;
     const shareData: ShareData = {
       title: 'Dinner Table Cards — Session Recap',
-      text: `We just played Dinner Table Cards! ${props.questionsPlayed} questions, ${props.playerCount} players. Play free 👉 https://dinnertablecards.xyz/play`,
+      text: `We just played Dinner Table Cards! ${props.questionsPlayed} questions, ${props.playerCount} players. Play free 👉 ${recapUrl}`,
     };
     // Prefer sharing the image file where supported.
     if (navigator.canShare?.({ files: [file] })) {
@@ -192,10 +195,10 @@ export default function RecapCard(props: RecapCardProps) {
         /* cancelled — fall through */
       }
     }
-    // Fallback: share text, or download the image.
+    // Fallback: share text + link, or download the image.
     if (navigator.share) {
       try {
-        await navigator.share({ ...shareData, url: 'https://dinnertablecards.xyz/play' });
+        await navigator.share({ ...shareData, url: recapUrl });
         return;
       } catch {
         /* cancelled */
