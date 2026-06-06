@@ -7,14 +7,16 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./dist"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
-# Run the Worker first for the root document so addSecurityHeaders() applies its
-# CSP/HSTS/X-Frame-Options to index.html too. Without this, Workers Assets serves
-# matching static files (e.g. "/" -> index.html) directly, bypassing the Worker —
-# which left the most-visited page with NO security headers. SPA routes (/play,
-# /privacy, …) already fall through to the Worker. Other static assets (hashed
-# JS/CSS/icons) are still served directly from edge cache; CSP/HSTS only matter on
-# the HTML document, which this covers.
-run_worker_first = ["/", "/index.html"]
+# Run the Worker first for EVERY request. This is required for correctness, not
+# just the security headers: the Worker owns the API (/api/*) and the Firebase auth
+# endpoints (/__/auth/* proxy + /__/firebase/init.json). With an allow-list array
+# here, Cloudflare served every *other* path assets-first, so those non-asset paths
+# fell through to the SPA (single-page-application) fallback and returned index.html
+# instead of reaching the Worker — which 404'd Google sign-in and made /api/* return
+# HTML. Running the Worker first restores that routing AND lets addSecurityHeaders()
+# wrap the root document (which assets-first served without CSP/HSTS). The Worker
+# falls through to env.ASSETS.fetch() for real static files, so they're still served.
+run_worker_first = true
 
 # Non-secret runtime vars
 [vars]
