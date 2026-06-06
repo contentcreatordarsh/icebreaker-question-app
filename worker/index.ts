@@ -340,6 +340,15 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return handleStats(env);
   }
 
+  // ── Per-question share page (dynamic Open Graph) ───────────────────────────
+  // Facebook/LinkedIn ignore pre-filled share text and build their preview from
+  // the shared URL's OG tags. Sharing /q?t=<question> serves a page whose OG
+  // title IS the question, so those previews finally show it. Humans see a
+  // branded card with a CTA into the app.
+  if (url.pathname === '/q' && request.method === 'GET') {
+    return handleQuestionShare(url);
+  }
+
   // ── Session history endpoint (auth required) ────────────────────────────────
   if (url.pathname === '/api/sessions/history' && request.method === 'GET') {
     return handleSessionHistory(request, env);
@@ -2089,6 +2098,83 @@ async function handleStats(env: Env): Promise<Response> {
     topCountry: countries[0]?.code ?? null,
   }, {
     headers: { 'Cache-Control': 'public, max-age=60' }, // cache 1 min
+  });
+}
+
+/** Escape a string for safe interpolation into HTML text / double-quoted attributes. */
+function escapeHtmlAttr(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * GET /q?t=<question>[&c=<category>] — Per-question share landing with dynamic
+ * Open Graph / Twitter Card meta so Facebook, LinkedIn, iMessage, Slack, etc.
+ * (which ignore pre-filled share text) render the actual question in their link
+ * preview. Humans get a branded card with a CTA into the app.
+ */
+function handleQuestionShare(url: URL): Response {
+  const raw = (url.searchParams.get('t') || '').slice(0, 300).trim();
+  const category = (url.searchParams.get('c') || '').slice(0, 40).trim();
+  const APP = 'https://dinnertablecards.xyz';
+
+  // Fallback to the generic landing if no question was supplied.
+  const question = raw || 'What question will spark your best conversation tonight?';
+  const q = escapeHtmlAttr(question);
+  const cat = category && /^[\w &'-]+$/.test(category) ? escapeHtmlAttr(category) : '';
+  const shareUrl = `${APP}/q?t=${encodeURIComponent(question)}${cat ? `&c=${encodeURIComponent(category)}` : ''}`;
+  const desc = 'A free conversation starter from Dinner Table Cards — 600+ curated questions for dinners, dates & teams.';
+
+  const html = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>${q} · Dinner Table Cards</title>
+<meta name="description" content="${escapeHtmlAttr(desc)}">
+<link rel="canonical" href="${escapeHtmlAttr(shareUrl)}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Dinner Table Cards">
+<meta property="og:url" content="${escapeHtmlAttr(shareUrl)}">
+<meta property="og:title" content="${q}">
+<meta property="og:description" content="${escapeHtmlAttr(desc)}">
+<meta property="og:image" content="${APP}/og-image.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${q}">
+<meta name="twitter:description" content="${escapeHtmlAttr(desc)}">
+<meta name="twitter:image" content="${APP}/og-image.svg">
+<style>
+  :root{color-scheme:light}
+  *{margin:0;box-sizing:border-box}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#F5F2ED;color:#1A1A1A;font-family:Georgia,'Times New Roman',serif;padding:2rem;text-align:center}
+  .wrap{max-width:34rem}
+  .kicker{font-size:.7rem;letter-spacing:.4em;text-transform:uppercase;color:rgba(26,26,26,.4);font-family:system-ui,sans-serif;margin-bottom:1.5rem}
+  .cat{font-size:.65rem;letter-spacing:.25em;text-transform:uppercase;color:#5A5A40;font-family:system-ui,sans-serif;margin-bottom:1rem}
+  h1{font-style:italic;font-weight:400;font-size:2rem;line-height:1.35;margin-bottom:2.25rem}
+  @media(min-width:640px){h1{font-size:2.5rem}}
+  .cta{display:inline-block;background:#5A5A40;color:#F5F2ED;text-decoration:none;font-family:system-ui,sans-serif;font-size:.7rem;letter-spacing:.25em;text-transform:uppercase;padding:.9rem 2rem;border-radius:999px;transition:background .2s}
+  .cta:hover{background:#4A4A34}
+  .foot{margin-top:2rem;font-family:system-ui,sans-serif;font-size:.7rem;color:rgba(26,26,26,.35)}
+</style>
+</head><body>
+  <main class="wrap">
+    <p class="kicker">Dinner&nbsp;Table&nbsp;Cards</p>
+    ${cat ? `<p class="cat">${cat}</p>` : ''}
+    <h1>&ldquo;${q}&rdquo;</h1>
+    <a class="cta" href="${APP}/">Get your own free question →</a>
+    <p class="foot">600+ curated conversation starters · dinnertablecards.xyz</p>
+  </main>
+</body></html>`;
+
+  return new Response(html, {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600',
+    },
   });
 }
 

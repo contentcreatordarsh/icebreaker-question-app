@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Share2, Heart, CheckCircle2,
   Twitter, Facebook, Linkedin, Instagram, Music,
-  Copy, Check, Zap, Shuffle, Sparkles, Lock,
+  Copy, Check, Zap, Shuffle, Sparkles, Lock, MessageCircle, Send,
 } from 'lucide-react';
 import { db, auth, authedFetch } from '../lib/firebase';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
@@ -241,35 +241,51 @@ export default function QuestionDisplay({
 
   const APP_URL = 'https://dinnertablecards.xyz';
 
-  const handleShare = () => {
-    if (dailyQuestion) {
-      navigator.share?.({
-        title: 'Dinner Table Cards',
-        text: `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`,
-        url: APP_URL,
-      }).catch(() => {});
+  // Per-question share URL. Its server-rendered Open Graph title IS the question,
+  // so Facebook/LinkedIn/iMessage/Slack previews (which ignore pre-filled text)
+  // finally show the question instead of the generic site description.
+  const questionShareUrl = () => {
+    if (!dailyQuestion) return APP_URL;
+    const params = new URLSearchParams({ t: dailyQuestion.text });
+    if (dailyQuestion.category) params.set('c', dailyQuestion.category);
+    return `${APP_URL}/q?${params.toString()}`;
+  };
+
+  const shareMessage = () =>
+    dailyQuestion ? `"${dailyQuestion.text}"\n\nGet your free question at Dinner Table Cards 🃏` : '';
+
+  // Native share sheet — the only way to reach Instagram/Stories and the best
+  // path on mobile (full text + URL to ANY installed app). Falls back to copy.
+  const handleShare = async () => {
+    if (!dailyQuestion) return;
+    const data = { title: 'Dinner Table Cards', text: shareMessage(), url: questionShareUrl() };
+    if (navigator.share) {
+      try { await navigator.share(data); return; } catch { /* cancelled — fall through */ }
     }
+    copyToClipboard();
   };
 
   const copyToClipboard = () => {
     if (dailyQuestion) {
-      navigator.clipboard.writeText(
-        `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`
-      );
+      navigator.clipboard.writeText(`${shareMessage()}\n${questionShareUrl()}`);
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
     }
   };
 
   const getShareUrls = () => {
-    if (!dailyQuestion) return { twitter: '', facebook: '', linkedin: '' };
-    const shareText = `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`;
-    const text = encodeURIComponent(shareText);
-    const url  = encodeURIComponent(APP_URL);
+    if (!dailyQuestion) return { twitter: '', facebook: '', linkedin: '', whatsapp: '', telegram: '' };
+    const text = encodeURIComponent(shareMessage());
+    const url = encodeURIComponent(questionShareUrl());
     return {
-      twitter:  `https://twitter.com/intent/tweet?text=${text}&url=${url}`,
+      // X reads the text param, so the question shows in the post itself.
+      twitter:  `https://x.com/intent/post?text=${text}&url=${url}`,
+      // FB/LinkedIn ignore text — they build the preview from /q's OG tags.
       facebook: `https://www.facebook.com/sharer/sharer.php?u=${url}`,
       linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${url}`,
+      // WhatsApp & Telegram accept full text + URL.
+      whatsapp: `https://wa.me/?text=${encodeURIComponent(`${shareMessage()}\n${questionShareUrl()}`)}`,
+      telegram: `https://t.me/share/url?url=${url}&text=${text}`,
     };
   };
 
@@ -575,10 +591,25 @@ export default function QuestionDisplay({
             </div>
 
             {/* Social sharing */}
-            <div className="flex items-center gap-6 mt-8">
-              <div className="flex gap-6 opacity-40 hover:opacity-100 transition-opacity">
-                <a href={shareUrls.twitter} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on Twitter">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3 mt-8">
+              {/* Native share sheet — primary path (mobile reaches Instagram, WhatsApp, anything) */}
+              <button
+                onClick={handleShare}
+                className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[10px] caps-tracking text-paper transition-all hover:bg-brand/90 active:scale-[0.98]"
+                title="Share"
+              >
+                <Share2 size={13} /> Share
+              </button>
+
+              <div className="flex items-center gap-5 opacity-40 hover:opacity-100 transition-opacity">
+                <a href={shareUrls.twitter} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on X">
                   <Twitter size={18} />
+                </a>
+                <a href={shareUrls.whatsapp} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on WhatsApp">
+                  <MessageCircle size={18} />
+                </a>
+                <a href={shareUrls.telegram} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on Telegram">
+                  <Send size={18} />
                 </a>
                 <a href={shareUrls.facebook} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on Facebook">
                   <Facebook size={18} />
@@ -586,10 +617,10 @@ export default function QuestionDisplay({
                 <a href={shareUrls.linkedin} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on LinkedIn">
                   <Linkedin size={18} />
                 </a>
-                <button onClick={copyToClipboard} className="hover:text-accent transition-colors" title="Copy for Instagram">
+                <button onClick={handleShare} className="hover:text-accent transition-colors" title="Share to Instagram (opens share sheet)">
                   <Instagram size={18} />
                 </button>
-                <button onClick={copyToClipboard} className="hover:text-accent transition-colors" title="Copy for TikTok">
+                <button onClick={handleShare} className="hover:text-accent transition-colors" title="Share to TikTok (opens share sheet)">
                   <Music size={18} />
                 </button>
               </div>
