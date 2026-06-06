@@ -451,7 +451,7 @@ export class GameSession implements DurableObject {
     await this.persist();
   }
 
-  private async handleStartQuestion(playerId: string, msg: { type: 'start_question'; text: string; timerSec?: number }): Promise<void> {
+  private async handleStartQuestion(playerId: string, msg: { type: 'start_question'; text: string; timerSec?: number; category?: string }): Promise<void> {
     if (!this.isHost(playerId)) {
       this.sendError(playerId, 'Only the host can start a question');
       return;
@@ -491,6 +491,13 @@ export class GameSession implements DurableObject {
     // Increment question stat (non-blocking)
     this.incrementStat('stats:questions_total');
     this.incrementStat(`daily:questions:${new Date().toISOString().slice(0, 10)}`);
+
+    // Per-category popularity — a prompt-tuning signal for the admin dashboard.
+    // Sanitise to a short, safe key segment; ignore anything unexpected.
+    const cat = (msg.category || '').trim().slice(0, 40);
+    if (cat && /^[\w &'-]+$/.test(cat)) {
+      this.incrementStat(`stats:category:${cat}`);
+    }
 
     // Set alarm for timer expiration
     await this.state.storage.setAlarm(new Date(timerEndsAt).getTime());

@@ -126,7 +126,7 @@ export interface GameState {
 /** Client → Server message types */
 export type GameClientMessage =
   | { type: 'join'; name: string; hostToken?: string; gender?: PlayerGender; avatar?: string }
-  | { type: 'start_question'; text: string; timerSec?: number }
+  | { type: 'start_question'; text: string; timerSec?: number; category?: string }
   | { type: 'submit_answer'; answer: string }
   | { type: 'reveal_next' }
   | { type: 'reveal_all' }

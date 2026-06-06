@@ -2077,9 +2077,23 @@ async function incrementStat(env: Env, key: string): Promise<void> {
 
 // ── Admin Dashboard endpoints ─────────────────────────────────────────────────
 
+/** Read every value under a KV prefix (parsed as int), sorted desc by count. */
+async function kvPrefixCounts(env: Env, prefix: string): Promise<{ key: string; count: number }[]> {
+  const list = await env.APP_KV.list({ prefix });
+  const entries = await Promise.all(
+    list.keys.map(async (k) => ({
+      key: k.name.slice(prefix.length),
+      count: parseInt((await env.APP_KV.get(k.name)) ?? '0', 10),
+    })),
+  );
+  return entries.filter((e) => e.count > 0).sort((a, b) => b.count - a.count);
+}
+
 /**
- * GET /api/admin/dashboard-stats — Admin-only. Returns overview metrics.
- * Includes KV counters + daily breakdown (last 7 days from KV).
+ * GET /api/admin/dashboard-stats — Admin-only. Rich analytics payload:
+ * lifetime counters, derived engagement ratios, 14-day trend, geography,
+ * category popularity, crowd question-vote leaderboards (the signal for tuning
+ * prompts), feedback rating distribution, and registered-user / usage stats.
  */
 async function handleAdminDashboardStats(request: Request, env: Env): Promise<Response> {
   const auth = await verifyIdToken(request, env);
@@ -2088,62 +2102,181 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
     return Response.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  // Fetch aggregate counters
-  const [sessions, players, questions] = await Promise.all([
+  const int = (v: string | null) => parseInt(v ?? '0', 10);
+
+  // ── Lifetime KV counters ──────────────────────────────────────────────────
+  const [sessions, players, questions, playSeconds, playCount] = await Promise.all([
     env.APP_KV.get('stats:sessions_total'),
     env.APP_KV.get('stats:players_total'),
     env.APP_KV.get('stats:questions_total'),
+    env.APP_KV.get('stats:play_seconds_total'),
+    env.APP_KV.get('stats:play_count'),
   ]);
+  const sN = int(sessions), pN = int(players), qN = int(questions);
+  const pSecs = int(playSeconds), pCnt = int(playCount);
 
-  // Fetch daily breakdown (last 7 days)
-  const daily: { date: string; sessions: number; players: number; questions: number }[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86400000);
-    const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
-    const [ds, dp, dq] = await Promise.all([
-      env.APP_KV.get(`daily:sessions:${key}`),
-      env.APP_KV.get(`daily:players:${key}`),
-      env.APP_KV.get(`daily:questions:${key}`),
-    ]);
-    daily.push({
-      date: key,
-      sessions: parseInt(ds ?? '0', 10),
-      players: parseInt(dp ?? '0', 10),
-      questions: parseInt(dq ?? '0', 10),
-    });
+  // ── 14-day daily trend ────────────────────────────────────────────────────
+  const dailyKeys: string[] = [];
+  for (let i = 13; i >= 0; i--) dailyKeys.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+  const daily = await Promise.all(
+    dailyKeys.map(async (key) => {
+      const [ds, dp, dq] = await Promise.all([
+        env.APP_KV.get(`daily:sessions:${key}`),
+        env.APP_KV.get(`daily:players:${key}`),
+        env.APP_KV.get(`daily:questions:${key}`),
+      ]);
+      return { date: key, sessions: int(ds), players: int(dp), questions: int(dq) };
+    }),
+  );
+
+  // ── Geography + category popularity (prefix scans) ────────────────────────
+  let countries: { code: string; count: number }[] = [];
+  let categories: { name: string; count: number }[] = [];
+  try {
+    countries = (await kvPrefixCounts(env, 'stats:country:'))
+      .filter((e) => /^[A-Z]{2}$/.test(e.key))
+      .map((e) => ({ code: e.key, count: e.count }));
+  } catch { /* non-critical */ }
+  try {
+    categories = (await kvPrefixCounts(env, 'stats:category:')).map((e) => ({ name: e.key, count: e.count }));
+  } catch { /* non-critical */ }
+
+  // ── Crowd question votes (qvote:* in KV) — the prompt-tuning signal ────────
+  const questionVotes = {
+    totalUp: 0,
+    totalDown: 0,
+    totalRated: 0,
+    topLiked: [] as { text: string; up: number; down: number }[],
+    topDisliked: [] as { text: string; up: number; down: number }[],
+  };
+  try {
+    const list = await env.APP_KV.list({ prefix: 'qvote:' });
+    const rows = (
+      await Promise.all(
+        list.keys.map(async (k) => {
+          const raw = await env.APP_KV.get(k.name);
+          if (!raw) return null;
+          try {
+            const v = JSON.parse(raw) as { up?: number; down?: number; text?: string };
+            return { text: v.text ?? '', up: v.up ?? 0, down: v.down ?? 0 };
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter((r): r is { text: string; up: number; down: number } => !!r && (r.up > 0 || r.down > 0));
+    questionVotes.totalRated = rows.length;
+    questionVotes.totalUp = rows.reduce((a, r) => a + r.up, 0);
+    questionVotes.totalDown = rows.reduce((a, r) => a + r.down, 0);
+    questionVotes.topLiked = [...rows]
+      .filter((r) => r.up > 0)
+      .sort((a, b) => b.up - b.down - (a.up - a.down) || b.up - a.up)
+      .slice(0, 10);
+    questionVotes.topDisliked = [...rows]
+      .filter((r) => r.down > 0)
+      .sort((a, b) => b.down - b.up - (a.down - a.up) || b.down - a.down)
+      .slice(0, 10);
+  } catch (err) {
+    console.error('qvote aggregation failed:', err);
   }
 
-  // Count feedback docs (query Firestore for total count)
-  let feedbackCount = 0;
+  // ── Firestore: feedback rating distribution + registered-user/usage stats ──
+  const feedback = { total: 0, ratedCount: 0, avgRating: null as number | null, distribution: [0, 0, 0, 0, 0] };
+  const users = { total: 0, sampled: 0, active: 0, premium: 0, hitFreeLimit: 0, avgUsage: 0, freeLimit: PLAN_LIMITS.free };
   try {
     const token = await getFirestoreToken(env);
     const baseUrl = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents`;
-    const queryRes = await fetch(`${baseUrl}:runAggregationQuery`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredAggregationQuery: {
-          structuredQuery: { from: [{ collectionId: 'feedback' }] },
-          aggregations: [{ alias: 'count', count: {} }],
-        },
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    // Counts (cheap aggregation queries).
+    const [fbCountRes, userCountRes, fbDocsRes, userDocsRes] = await Promise.all([
+      fetch(`${baseUrl}:runAggregationQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredAggregationQuery: { structuredQuery: { from: [{ collectionId: 'feedback' }] }, aggregations: [{ alias: 'c', count: {} }] } }),
       }),
-    });
-    if (queryRes.ok) {
-      const results = await queryRes.json() as Array<{ result?: { aggregateFields?: { count?: { integerValue?: string } } } }>;
-      feedbackCount = parseInt(results?.[0]?.result?.aggregateFields?.count?.integerValue ?? '0', 10);
+      fetch(`${baseUrl}:runAggregationQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredAggregationQuery: { structuredQuery: { from: [{ collectionId: 'users' }] }, aggregations: [{ alias: 'c', count: {} }] } }),
+      }),
+      // Rating distribution (feedback is low-volume; sample up to 1000).
+      fetch(`${baseUrl}:runQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'feedback' }], select: { fields: [{ fieldPath: 'rating' }] }, limit: 1000 } }),
+      }),
+      // Usage sample (cap reads at 500).
+      fetch(`${baseUrl}:runQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'users' }], select: { fields: [{ fieldPath: 'usageCount' }, { fieldPath: 'isPremium' }] }, limit: 500 } }),
+      }),
+    ]);
+
+    if (fbCountRes.ok) {
+      const r = await fbCountRes.json() as Array<{ result?: { aggregateFields?: { c?: { integerValue?: string } } } }>;
+      feedback.total = int(r?.[0]?.result?.aggregateFields?.c?.integerValue ?? '0');
+    }
+    if (userCountRes.ok) {
+      const r = await userCountRes.json() as Array<{ result?: { aggregateFields?: { c?: { integerValue?: string } } } }>;
+      users.total = int(r?.[0]?.result?.aggregateFields?.c?.integerValue ?? '0');
+    }
+    if (fbDocsRes.ok) {
+      const docs = await fbDocsRes.json() as Array<{ document?: { fields?: { rating?: { integerValue?: string } } } }>;
+      for (const d of docs) {
+        const rt = d.document?.fields?.rating?.integerValue;
+        if (rt) {
+          const n = parseInt(rt, 10);
+          if (n >= 1 && n <= 5) { feedback.distribution[n - 1]++; feedback.ratedCount++; }
+        }
+      }
+      if (feedback.ratedCount > 0) {
+        const sum = feedback.distribution.reduce((a, c, i) => a + c * (i + 1), 0);
+        feedback.avgRating = Math.round((sum / feedback.ratedCount) * 10) / 10;
+      }
+    }
+    if (userDocsRes.ok) {
+      const docs = await userDocsRes.json() as Array<{ document?: { fields?: { usageCount?: { integerValue?: string }; isPremium?: { booleanValue?: boolean } } } }>;
+      let usageSum = 0;
+      for (const d of docs) {
+        const f = d.document?.fields;
+        if (!f) continue;
+        users.sampled++;
+        const u = int(f.usageCount?.integerValue ?? '0');
+        usageSum += u;
+        if (u > 0) users.active++;
+        if (f.isPremium?.booleanValue) users.premium++;
+        if (u >= PLAN_LIMITS.free) users.hitFreeLimit++;
+      }
+      users.avgUsage = users.sampled > 0 ? Math.round((usageSum / users.sampled) * 10) / 10 : 0;
     }
   } catch (err) {
-    console.error('Failed to count feedback:', err);
+    console.error('Firestore analytics failed:', err);
   }
 
+  // ── Derived engagement ratios ─────────────────────────────────────────────
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const engagement = {
+    avgPlaySeconds: pCnt > 0 ? Math.round(pSecs / pCnt) : null,
+    avgPlayersPerSession: sN > 0 ? round1(pN / sN) : null,
+    avgQuestionsPerSession: sN > 0 ? round1(qN / sN) : null,
+    completionRate: sN > 0 ? Math.round((pCnt / sN) * 100) : null, // % of sessions that finished a round
+  };
+
   return Response.json({
+    generatedAt: new Date().toISOString(),
     totals: {
-      sessions: parseInt(sessions ?? '0', 10),
-      players: parseInt(players ?? '0', 10),
-      questions: parseInt(questions ?? '0', 10),
-      feedback: feedbackCount,
+      sessions: sN,
+      players: pN,
+      questions: qN,
+      feedback: feedback.total,
+      registeredUsers: users.total,
+      completedSessions: pCnt,
     },
+    engagement,
     daily,
+    countries,
+    categories,
+    questionVotes,
+    feedback,
+    users,
   });
 }
 

@@ -57,8 +57,8 @@ export default function HostSession() {
     return [...(bank.Light || []), ...(bank.Deep || [])];
   }, [selectedCategory]);
 
-  const handleStartQuestion = useCallback((text: string) => {
-    actions.startQuestion(text, timerSec);
+  const handleStartQuestion = useCallback((text: string, category?: string) => {
+    actions.startQuestion(text, timerSec, category);
     setUsedQuestions(prev => new Set(prev).add(text));
     setShowPicker(false);
     setCustomQuestion('');
@@ -245,7 +245,7 @@ export default function HostSession() {
                   return (
                     <button
                       key={q}
-                      onClick={() => handleStartQuestion(q)}
+                      onClick={() => handleStartQuestion(q, selectedCategory)}
                       disabled={isUsed}
                       className={cn(
                         'block w-full border-b border-[#1A1A1A]/5 px-4 py-3 text-left text-sm transition-colors last:border-b-0',
@@ -276,7 +276,7 @@ export default function HostSession() {
                   style={{ fontFamily: 'Georgia, serif' }}
                 />
                 <button
-                  onClick={() => handleStartQuestion(customQuestion.trim())}
+                  onClick={() => handleStartQuestion(customQuestion.trim(), 'Custom')}
                   disabled={!customQuestion.trim()}
                   className={cn(
                     'w-full rounded-full py-2.5 text-xs uppercase tracking-[0.2em] transition-all',

@@ -226,7 +226,7 @@ interface UseGameSocketReturn {
   error: string | null;
   actions: {
     submitAnswer: (answer: string) => void;
-    startQuestion: (text: string, timerSec?: number) => void;
+    startQuestion: (text: string, timerSec?: number, category?: string) => void;
     revealNext: () => void;
     revealAll: () => void;
     nextQuestion: () => void;
@@ -378,8 +378,8 @@ export function useGameSocket({
       });
     }, [sendMessage, state.game.playerId, state.game.players.length, state.game.answeredPlayerIds.size]),
 
-    startQuestion: useCallback((text: string, timerSec?: number) => {
-      sendMessage({ type: 'start_question', text, timerSec });
+    startQuestion: useCallback((text: string, timerSec?: number, category?: string) => {
+      sendMessage({ type: 'start_question', text, timerSec, category });
     }, [sendMessage]),
 
     revealNext: useCallback(() => {
