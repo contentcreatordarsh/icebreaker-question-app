@@ -89,7 +89,7 @@ export default function Landing({ onSignIn }: LandingProps) {
           <div className="flex items-center gap-3">
             <Logo size={36} className="text-brand" />
             <div>
-              <span className="caps-tracking opacity-30 block text-[9px] mb-0.5">Vol. I · Est. 2024</span>
+              <span className="caps-tracking opacity-30 block text-[9px] mb-0.5">Vol. 2026</span>
               <h1 className="font-serif text-xl md:text-2xl italic tracking-tight">
                 Dinner Table Cards
               </h1>
