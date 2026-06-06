@@ -57,6 +57,26 @@ export default function AboutOverlay({ onClose }: AboutOverlayProps) {
               </ul>
             </div>
           </div>
+
+          <div className="pt-12 border-t border-brand/10">
+            <h3 className="caps-tracking text-[10px] mb-4 opacity-40">Contact</h3>
+            <p className="text-sm font-serif italic opacity-60">
+              Questions, feedback, or just want to say hello? Email{' '}
+              <a href="mailto:contentcreatordarsh@gmail.com" className="underline hover:opacity-100 transition-opacity">
+                contentcreatordarsh@gmail.com
+              </a>{' '}
+              or reach out on{' '}
+              <a
+                href="https://x.com/hegdedarsh"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:opacity-100 transition-opacity"
+              >
+                X (@hegdedarsh)
+              </a>
+              .
+            </p>
+          </div>
         </div>
 
         <div className="mt-auto pt-16 border-t border-brand/5 text-[10px] caps-tracking opacity-20 flex justify-between items-center">

@@ -40,7 +40,7 @@ export default function Privacy() {
 
           <section>
             <h2 className="font-serif text-lg italic mb-2">Contact</h2>
-            <p>Questions about privacy? Email <span className="underline">darshan.p.hegde@gmail.com</span>.</p>
+            <p>Questions about privacy? Email <a href="mailto:contentcreatordarsh@gmail.com" className="underline">contentcreatordarsh@gmail.com</a> or reach out on <a href="https://x.com/hegdedarsh" target="_blank" rel="noopener noreferrer" className="underline">X (@hegdedarsh)</a>.</p>
           </section>
         </div>
       </div>

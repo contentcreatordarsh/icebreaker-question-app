@@ -151,6 +151,13 @@ export default function FeedbackModal({ onClose, sessionCode, questionText }: Fe
         >
           {submitting ? 'Sending...' : 'Submit Feedback'}
         </button>
+
+        {/* Alternative contact channels */}
+        <p className="mt-3 text-center text-[11px] text-[#1A1A1A]/40">
+          Prefer email? <a href="mailto:contentcreatordarsh@gmail.com" className="underline hover:text-[#1A1A1A]/70">contentcreatordarsh@gmail.com</a>
+          {' · '}
+          <a href="https://x.com/hegdedarsh" target="_blank" rel="noopener noreferrer" className="underline hover:text-[#1A1A1A]/70">@hegdedarsh</a>
+        </p>
       </div>
     </div>
   );
