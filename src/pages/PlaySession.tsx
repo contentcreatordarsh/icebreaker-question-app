@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useLocation } from 'react-router-dom';
 import { useGameSocket } from '../hooks/useGameSocket';
 import { useSoundEffects } from '../hooks/useSoundEffects';
+import { useGameStatusAnnouncer } from '../hooks/useGameStatusAnnouncer';
 import Lobby from '../components/game/Lobby';
 import Timer from '../components/game/Timer';
 import PlayerList from '../components/game/PlayerList';
@@ -10,7 +11,7 @@ import VotingCard from '../components/game/VotingCard';
 import Leaderboard from '../components/game/Leaderboard';
 import AvatarPicker, { getDefaultAvatar } from '../components/game/AvatarPicker';
 import FeedbackModal from '../components/FeedbackModal';
-import ShareResults from '../components/game/ShareResults';
+import RecapCard from '../components/game/RecapCard';
 import QuestionVote from '../components/game/QuestionVote';
 import SoundToggle from '../components/game/SoundToggle';
 import GameErrorBoundary from '../components/game/GameErrorBoundary';
@@ -82,6 +83,9 @@ export default function PlaySession() {
     }
     prevRevealCountRef.current = gameState.revealedAnswers.length;
   }, [gameState.status, gameState.revealedAnswers.length, playSound]);
+
+  // Accessibility: phase-aware document title + screen-reader announcements.
+  useGameStatusAnnouncer(gameState, { submitted });
 
   const handleSubmit = useCallback(() => {
     const trimmed = answer.trim();
@@ -218,28 +222,34 @@ export default function PlaySession() {
             </div>
           )}
 
-          <div className="flex flex-col items-center gap-3">
-            <a
-              href="/play"
-              className="inline-block rounded-full bg-[#5A5A40] px-6 py-2.5 text-xs uppercase tracking-[0.3em] text-[#F5F2ED] transition-all hover:bg-[#4A4A34]"
-            >
-              Join Another Session
-            </a>
-            {gameState.status === 'ended' && (
-              <>
-                <ShareResults
+          {/* Shareable recap card — the viral memento with the join URL baked in */}
+          {gameState.status === 'ended' && (
+            <div className="mb-8">
+              <GameErrorBoundary fallbackMessage="Could not generate the recap card.">
+                <RecapCard
                   questionsPlayed={gameState.currentQuestion?.index || 0}
                   playerCount={gameState.players.length}
                   leaderboard={gameState.leaderboard}
                   roomCode={gameState.roomCode}
                 />
-                <button
-                  onClick={() => setShowFeedback(true)}
-                  className="text-xs uppercase tracking-wider text-[#1A1A1A]/40 transition-colors hover:text-[#1A1A1A]/70"
-                >
-                  💬 Send Feedback
-                </button>
-              </>
+              </GameErrorBoundary>
+            </div>
+          )}
+
+          <div className="flex flex-col items-center gap-3">
+            <a
+              href="/play"
+              className="inline-block rounded-full border border-[#1A1A1A]/10 px-6 py-2.5 text-xs uppercase tracking-[0.3em] text-[#1A1A1A]/60 transition-all hover:border-[#5A5A40]/30 hover:text-[#5A5A40]"
+            >
+              Join Another Session
+            </a>
+            {gameState.status === 'ended' && (
+              <button
+                onClick={() => setShowFeedback(true)}
+                className="text-xs uppercase tracking-wider text-[#1A1A1A]/40 transition-colors hover:text-[#1A1A1A]/70"
+              >
+                💬 Send Feedback
+              </button>
             )}
           </div>
         </div>
@@ -314,13 +324,24 @@ export default function PlaySession() {
                 id="answer-input"
                 value={answer}
                 onChange={e => setAnswer(e.target.value)}
+                onKeyDown={e => {
+                  // Cmd/Ctrl+Enter submits (Enter alone allows multi-line answers).
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSubmit();
+                  }
+                }}
                 maxLength={500}
                 rows={3}
                 placeholder="Type your answer..."
+                aria-describedby="answer-hint"
                 autoFocus
-                className="mb-4 w-full resize-none rounded-xl border-2 border-[#1A1A1A]/10 bg-white p-4 text-[#1A1A1A] shadow-sm outline-none transition-all placeholder:text-[#1A1A1A]/20 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20"
+                className="mb-2 w-full resize-none rounded-xl border-2 border-[#1A1A1A]/10 bg-white p-4 text-[#1A1A1A] shadow-sm outline-none transition-all placeholder:text-[#1A1A1A]/20 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20"
                 style={{ fontFamily: 'Georgia, serif' }}
               />
+              <p id="answer-hint" className="mb-4 text-center text-[10px] uppercase tracking-wider text-[#1A1A1A]/30">
+                Press ⌘/Ctrl + Enter to submit
+              </p>
               <button
                 onClick={handleSubmit}
                 disabled={!answer.trim()}

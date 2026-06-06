@@ -1,12 +1,13 @@
 import { useState, useCallback, useMemo } from 'react';
 import { useParams, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { useGameSocket } from '../hooks/useGameSocket';
+import { useGameStatusAnnouncer } from '../hooks/useGameStatusAnnouncer';
 import { QUESTION_BANK } from '../data/questions';
 import Lobby from '../components/game/Lobby';
 import Timer from '../components/game/Timer';
 import PlayerList from '../components/game/PlayerList';
 import AnswerCard from '../components/game/AnswerCard';
-import ShareResults from '../components/game/ShareResults';
+import RecapCard from '../components/game/RecapCard';
 import QuestionVote from '../components/game/QuestionVote';
 import GameErrorBoundary from '../components/game/GameErrorBoundary';
 import { cn } from '../lib/utils';
@@ -45,6 +46,9 @@ export default function HostSession() {
     hostToken: hostToken || undefined,
     enabled: !!roomCode && !!hostToken,
   });
+
+  // Accessibility: phase-aware document title + screen-reader announcements.
+  useGameStatusAnnouncer(gameState, { submitted: false });
 
   // Build question list for the selected category
   const categoryQuestions = useMemo(() => {
@@ -129,16 +133,20 @@ export default function HostSession() {
           </div>
         )}
 
-        <div className="flex flex-col items-center gap-3">
-          <a href="/" className="inline-block rounded-full bg-[#5A5A40] px-6 py-2.5 text-xs uppercase tracking-[0.3em] text-[#F5F2ED] transition-all hover:bg-[#4A4A34]">
-            Back Home
-          </a>
-          <ShareResults
+        {/* Shareable recap card — host is most likely to post results to Reddit/X */}
+        <div className="mb-8">
+          <RecapCard
             questionsPlayed={gameState.currentQuestion?.index || 0}
             playerCount={gameState.players.length}
             leaderboard={gameState.leaderboard}
             roomCode={gameState.roomCode}
           />
+        </div>
+
+        <div className="flex flex-col items-center gap-3">
+          <a href="/" className="inline-block rounded-full border border-[#1A1A1A]/10 px-6 py-2.5 text-xs uppercase tracking-[0.3em] text-[#1A1A1A]/60 transition-all hover:border-[#5A5A40]/30 hover:text-[#5A5A40]">
+            Back Home
+          </a>
         </div>
       </div>
     );

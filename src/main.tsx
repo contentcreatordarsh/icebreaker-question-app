@@ -43,7 +43,10 @@ const HostSession = lazy(() => import('./pages/HostSession.tsx'));
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard.tsx'));
 const SessionHistory = lazy(() => import('./pages/SessionHistory.tsx'));
 
-/** Announces route changes to screen readers via an aria-live region. */
+/**
+ * Per-route page name. Used both to set <title> (SEO + browser tab + a11y) and
+ * to announce navigation to screen readers via an aria-live region.
+ */
 const ROUTE_TITLES: Record<string, string> = {
   '/': 'Dinner Table Cards',
   '/privacy': 'Privacy Policy',
@@ -54,17 +57,34 @@ const ROUTE_TITLES: Record<string, string> = {
   '/sessions': 'Session History',
 };
 
+const SITE_NAME = 'Dinner Table Cards';
+
+function routeTitle(pathname: string): string {
+  return (
+    ROUTE_TITLES[pathname] ??
+    (pathname.startsWith('/play/')
+      ? 'Live Session'
+      : pathname.startsWith('/host/')
+        ? 'Host Session'
+        : SITE_NAME)
+  );
+}
+
+/**
+ * Drives the document <title> per SPA route (so each route has a meaningful,
+ * shareable, screen-reader-friendly title instead of a single static one) and
+ * announces navigation to assistive tech via an aria-live region.
+ *
+ * In-game phase titles (e.g. "Question 2") are layered on top of this by the
+ * useDocumentTitle hook inside the live-session pages.
+ */
 function RouteAnnouncer() {
   const { pathname } = useLocation();
   const [announcement, setAnnouncement] = useState('');
 
   useEffect(() => {
-    // Derive page title from route map, or generate from pathname
-    const title =
-      ROUTE_TITLES[pathname] ??
-      (pathname.startsWith('/play/') ? 'Live Session' :
-       pathname.startsWith('/host/') ? 'Host Session' :
-       'Dinner Table Cards');
+    const title = routeTitle(pathname);
+    document.title = pathname === '/' ? `${SITE_NAME} — Conversation Starters for Meaningful Moments` : `${title} · ${SITE_NAME}`;
     setAnnouncement(`Navigated to ${title}`);
   }, [pathname]);
 
