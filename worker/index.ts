@@ -1600,11 +1600,11 @@ function handleQuestionShare(url: URL): Response {
 <meta property="og:url" content="${escapeHtmlAttr(shareUrl)}">
 <meta property="og:title" content="${q}">
 <meta property="og:description" content="${escapeHtmlAttr(desc)}">
-<meta property="og:image" content="${APP}/og-image.svg">
+<meta property="og:image" content="${APP}/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${q}">
 <meta name="twitter:description" content="${escapeHtmlAttr(desc)}">
-<meta name="twitter:image" content="${APP}/og-image.svg">
+<meta name="twitter:image" content="${APP}/og-image.png">
 <style>
   :root{color-scheme:light}
   *{margin:0;box-sizing:border-box}
