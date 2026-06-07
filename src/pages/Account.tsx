@@ -13,7 +13,6 @@ export default function Account() {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
-  const [portalLoading, setPortalLoading] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -65,26 +64,6 @@ export default function Account() {
     }
   }
 
-  async function handleManageSubscription() {
-    setError(null);
-    setPortalLoading(true);
-    try {
-      const res = await authedFetch('/api/billing-portal', {
-        returnUrl: window.location.origin + '/account',
-      });
-      const data = (await res.json()) as { url?: string; error?: string };
-      if (res.ok && data.url) {
-        window.location.href = data.url;
-      } else {
-        setError(data.error || 'Could not open the billing portal.');
-        setPortalLoading(false);
-      }
-    } catch {
-      setError('Could not open the billing portal.');
-      setPortalLoading(false);
-    }
-  }
-
   async function handleDeleteAccount() {
     if (!user) return;
     setError(null);
@@ -116,8 +95,6 @@ export default function Account() {
   }
 
   const plan = profile ? PLANS[profile.subscriptionPlan] ?? PLANS.free : PLANS.free;
-  const hasSubscription =
-    !!profile && (profile.subscriptionPlan === 'monthly' || profile.subscriptionPlan === 'yearly');
 
   return (
     <div className="min-h-screen bg-paper text-brand">
@@ -151,12 +128,7 @@ export default function Account() {
               </div>
               <div className="flex justify-between items-baseline border-b border-brand/10 pb-3">
                 <span className="text-[11px] caps-tracking opacity-40">Plan</span>
-                <span className="text-sm">
-                  {plan.name}
-                  {hasSubscription && profile?.subscriptionStatus === 'canceled' && (
-                    <span className="opacity-50"> · canceling</span>
-                  )}
-                </span>
+                <span className="text-sm">Free · feedback unlocks more</span>
               </div>
               <div className="flex justify-between items-baseline border-b border-brand/10 pb-3">
                 <span className="text-[11px] caps-tracking opacity-40">Usage</span>
@@ -211,16 +183,6 @@ export default function Account() {
               >
                 🎲 Session History
               </Link>
-              {hasSubscription && (
-                <button
-                  onClick={handleManageSubscription}
-                  disabled={portalLoading}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 text-[11px] caps-tracking border border-brand/30 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors disabled:opacity-50"
-                >
-                  {portalLoading && <Loader2 size={14} className="animate-spin" />}
-                  Manage subscription
-                </button>
-              )}
             </section>
 
             <section className="space-y-4 pt-6 border-t border-brand/10">

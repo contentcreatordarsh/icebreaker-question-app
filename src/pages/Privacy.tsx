@@ -20,12 +20,12 @@ export default function Privacy() {
 
           <section>
             <h2 className="font-serif text-lg italic mb-2">How we use it</h2>
-            <p>Your data powers the features you use — saving favorites, tracking streaks and usage limits, attributing referrals, and managing your subscription. We do not sell your personal information.</p>
+            <p>Your data powers the features you use — saving favorites, tracking streaks and usage, and attributing referrals. We do not sell your personal information.</p>
           </section>
 
           <section>
             <h2 className="font-serif text-lg italic mb-2">Payments</h2>
-            <p>Payments are processed by Stripe. We never see or store your full card details. We store a Stripe customer identifier so you can manage your subscription.</p>
+            <p>Dinner Table Cards is free. We don&rsquo;t take payments and never collect card or billing details.</p>
           </section>
 
           <section>
