@@ -34,6 +34,11 @@ export default function Privacy() {
           </section>
 
           <section>
+            <h2 className="font-serif text-lg italic mb-2">Advertising</h2>
+            <p>We keep the app free by showing ads via Google AdSense. We ask for your consent first — if you agree, Google and its partners may use cookies to show and measure ads, including more relevant ones. You can decline, and the app works exactly the same. You can change your mind any time by clearing this site&rsquo;s cookies. See <a href="https://policies.google.com/technologies/ads" target="_blank" rel="noopener noreferrer" className="underline">Google&rsquo;s ads policy</a> for details.</p>
+          </section>
+
+          <section>
             <h2 className="font-serif text-lg italic mb-2">Your choices</h2>
             <p>You can view and manage your data from your <Link to="/account" className="underline">account page</Link>, including deleting your account, which permanently removes your profile, favorites, and history.</p>
           </section>

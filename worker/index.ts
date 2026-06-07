@@ -129,23 +129,29 @@ function addSecurityHeaders(response: Response): Response {
   //   • Firebase Auth popup/iframe (project firebaseapp.com + accounts.google.com)
   //   • PWA manifest (manifest-src 'self')
   // Cloudflare Web Analytics is allowed in CSP (beacon script + connect for reporting).
+  // Google AdSense origins — permitted so ads can load once a publisher ID is set.
+  // Scoped to Google's ad domains (no broad wildcards). Harmless until ads serve.
+  const AD_SCRIPT = 'https://pagead2.googlesyndication.com https://*.googlesyndication.com https://adservice.google.com https://*.googleadservices.com';
+  const AD_FRAME = 'https://googleads.g.doubleclick.net https://*.googlesyndication.com https://www.google.com';
+  const AD_IMG = 'https://*.googlesyndication.com https://*.g.doubleclick.net https://*.google.com';
+  const AD_CONNECT = 'https://*.googlesyndication.com https://*.g.doubleclick.net https://*.google.com https://*.googleadservices.com';
   r.headers.set(
     'Content-Security-Policy',
     "default-src 'self'; " +
     // apis.google.com hosts the gapi script (api.js) Firebase Auth uses to set
     // up its cross-frame messaging relay for getRedirectResult.
-    "script-src 'self' https://apis.google.com https://static.cloudflareinsights.com; " +
+    `script-src 'self' https://apis.google.com https://static.cloudflareinsights.com ${AD_SCRIPT}; ` +
     "style-src 'self' 'unsafe-inline'; " +
     "connect-src 'self' wss: https://firestore.googleapis.com https://securetoken.googleapis.com " +
       "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com " +
       "https://apis.google.com https://www.googleapis.com " +
-      "https://cloudflareinsights.com https://*.sentry.io; " +
-    "img-src 'self' https://lh3.googleusercontent.com data:; " +
+      `https://cloudflareinsights.com https://*.sentry.io ${AD_CONNECT}; ` +
+    `img-src 'self' https://lh3.googleusercontent.com data: ${AD_IMG}; ` +
     // Firebase Auth loads its helper iframe from the authDomain (now our own
     // origin, 'self', i.e. /__/auth/iframe) plus a gapi relay iframe from
     // apis.google.com. Without 'self' + apis.google.com here, getRedirectResult
     // fails with auth/internal-error. firebaseapp.com kept for completeness.
-    "frame-src 'self' https://apis.google.com https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com; " +
+    `frame-src 'self' https://apis.google.com https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com ${AD_FRAME}; ` +
     "frame-ancestors 'none'; " +
     "object-src 'none'; " +
     "base-uri 'self'; " +
