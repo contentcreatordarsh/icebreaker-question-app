@@ -14,8 +14,7 @@ import QuestionDisplay from './components/QuestionDisplay';
 import PackSelector from './components/PackSelector';
 import OnboardingToast from './components/OnboardingToast';
 import AdSlot from './components/AdSlot';
-import ConsentBanner from './components/ConsentBanner';
-import { ADSENSE_SLOT_HOME, adsConfigured, manageConsent } from './lib/ads';
+import { ADSENSE_SLOT_HOME } from './lib/ads';
 
 // Lazy-load overlay/modal components — they're behind user interaction and
 // not needed on first paint. Keeps the initial bundle small.
@@ -638,12 +637,10 @@ export default function App() {
 
       </main>
 
-      {/* Ad unit — only renders once a publisher ID is set + consent granted.
-          Kept off the live-game screens (separate routes) to stay non-intrusive. */}
-      <AdSlot slot={ADSENSE_SLOT_HOME} className="my-8" />
-
-      {/* Cookie consent — only appears once ads are configured. */}
-      <ConsentBanner />
+      {/* Ad unit — hidden until a real ad fills (invisible before approval / when
+          unfilled). Consent is handled by Google's CMP. Kept off the live-game
+          screens (separate routes) to stay non-intrusive. */}
+      <AdSlot slot={ADSENSE_SLOT_HOME} />
 
       {/* Footer */}
       <footer className="p-8 md:p-12 grid grid-cols-1 md:grid-cols-3 items-end border-t border-brand/10 max-w-7xl mx-auto w-full gap-8">
@@ -702,9 +699,6 @@ export default function App() {
             <Link to="/privacy" className="hover:opacity-100 transition-opacity">Privacy</Link>
             <Link to="/terms" className="hover:opacity-100 transition-opacity">Terms</Link>
             <Link to="/account" className="hover:opacity-100 transition-opacity">Account</Link>
-            {adsConfigured() && (
-              <button onClick={manageConsent} className="hover:opacity-100 transition-opacity">Cookie preferences</button>
-            )}
           </div>
           <p className="caps-tracking opacity-40">&copy; 2026 Cultivating Meaningful Dialogue</p>
         </div>

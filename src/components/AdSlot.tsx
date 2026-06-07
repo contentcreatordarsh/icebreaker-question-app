@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { adsEnabled, adsenseClient, CONSENT_EVENT } from '../lib/ads';
+import { adsConfigured, adsenseClient } from '../lib/ads';
 import { cn } from '../lib/utils';
 
 declare global {
@@ -12,39 +12,49 @@ interface AdSlotProps {
   /** AdSense ad-unit slot ID (data-ad-slot). Falsy → renders nothing. */
   slot: string;
   className?: string;
-  /** Optional small "Advertisement" label above the unit. */
-  label?: boolean;
 }
 
 /**
- * A single responsive AdSense unit. Renders NOTHING unless ads are both
- * configured (publisher ID set) and consented to — so it's invisible until ads
- * are switched on. Re-renders when consent changes.
+ * A single responsive AdSense display unit.
+ *
+ * Renders the <ins> so AdSense can fill it, but keeps the wrapper (label +
+ * spacing) hidden until an ad actually fills (data-ad-status="filled"). That
+ * means: nothing visible before the site is approved or when no ad is available
+ * — no empty "Advertisement" boxes — and minimal layout shift (the slot sits
+ * below the main content).
  */
-export default function AdSlot({ slot, className, label = true }: AdSlotProps) {
+export default function AdSlot({ slot, className }: AdSlotProps) {
   const insRef = useRef<HTMLModElement>(null);
-  const [enabled, setEnabled] = useState(adsEnabled());
+  const [status, setStatus] = useState<'pending' | 'filled' | 'unfilled'>('pending');
 
   useEffect(() => {
-    const onChange = () => setEnabled(adsEnabled());
-    window.addEventListener(CONSENT_EVENT, onChange);
-    return () => window.removeEventListener(CONSENT_EVENT, onChange);
-  }, []);
-
-  useEffect(() => {
-    if (!enabled || !slot) return;
+    if (!adsConfigured() || !slot) return;
+    const ins = insRef.current;
+    if (!ins) return;
     try {
       (window.adsbygoogle = window.adsbygoogle || []).push({});
     } catch {
-      /* adsbygoogle not ready yet — it retries on next render */
+      /* adsbygoogle not ready — AdSense retries automatically */
     }
-  }, [enabled, slot]);
+    // Watch AdSense's fill signal so we only reveal the label/spacing once filled.
+    const obs = new MutationObserver(() => {
+      const s = ins.getAttribute('data-ad-status');
+      if (s === 'filled') setStatus('filled');
+      else if (s === 'unfilled') setStatus('unfilled');
+    });
+    obs.observe(ins, { attributes: true, attributeFilter: ['data-ad-status'] });
+    return () => obs.disconnect();
+  }, [slot]);
 
-  if (!enabled || !slot) return null;
+  if (!adsConfigured() || !slot) return null;
 
+  // The <ins> must keep full width so AdSense can measure + fill it. We only add
+  // the label + vertical spacing once an ad fills; unfilled responsive units
+  // collapse to 0 height, so the slot is invisible until a real ad shows.
+  const filled = status === 'filled';
   return (
-    <div className={cn('mx-auto w-full max-w-3xl px-4 text-center', className)}>
-      {label && (
+    <div className={cn('mx-auto w-full max-w-3xl px-4 text-center', filled && 'my-8', className)}>
+      {filled && (
         <p className="mb-1 text-[9px] uppercase tracking-[0.3em] text-brand/25">Advertisement</p>
       )}
       <ins
