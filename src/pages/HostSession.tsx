@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useParams, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { useGameSocket } from '../hooks/useGameSocket';
 import { useGameStatusAnnouncer } from '../hooks/useGameStatusAnnouncer';
@@ -7,6 +7,7 @@ import Lobby from '../components/game/Lobby';
 import Timer from '../components/game/Timer';
 import PlayerList from '../components/game/PlayerList';
 import AnswerCard from '../components/game/AnswerCard';
+import VotingCard from '../components/game/VotingCard';
 import RecapCard from '../components/game/RecapCard';
 import QuestionVote from '../components/game/QuestionVote';
 import GameErrorBoundary from '../components/game/GameErrorBoundary';
@@ -63,6 +64,29 @@ export default function HostSession() {
     setShowPicker(false);
     setCustomQuestion('');
   }, [actions, timerSec]);
+
+  // ── Host-as-player: the host answers and votes like everyone else ──────────
+  const [answer, setAnswer] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+
+  // Reset the host's answer state whenever a new question starts.
+  const questionRef = useRef(gameState.currentQuestion?.text);
+  useEffect(() => {
+    if (gameState.currentQuestion?.text && gameState.currentQuestion.text !== questionRef.current) {
+      setAnswer('');
+      setSubmitted(false);
+      questionRef.current = gameState.currentQuestion.text;
+    }
+  }, [gameState.currentQuestion?.text]);
+
+  const handleHostSubmit = useCallback(() => {
+    const t = answer.trim();
+    if (!t) return;
+    actions.submitAnswer(t);
+    setSubmitted(true);
+  }, [answer, actions]);
+
+  const hostAnswered = submitted || gameState.answeredPlayerIds.has(gameState.playerId);
 
   const handleEndAndLeave = useCallback(() => {
     actions.endSession();
@@ -322,6 +346,50 @@ export default function HostSession() {
 
         {/* Status */}
         <div className="flex flex-1 flex-col items-center justify-center px-6 py-8">
+          {/* Host's own answer — the host plays too */}
+          <div className="mb-8 w-full max-w-md">
+            {hostAnswered ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 text-center">
+                <p className="flex items-center justify-center gap-2 text-sm font-medium text-emerald-700">
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                  Your answer is in
+                </p>
+              </div>
+            ) : (
+              <>
+                <label htmlFor="host-answer" className="mb-2 block text-center text-xs uppercase tracking-wider text-[#5A5A40]">
+                  Your answer
+                </label>
+                <textarea
+                  id="host-answer"
+                  value={answer}
+                  onChange={e => setAnswer(e.target.value)}
+                  onKeyDown={e => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); handleHostSubmit(); }
+                  }}
+                  maxLength={500}
+                  rows={2}
+                  placeholder="Answer your own question..."
+                  className="w-full resize-none rounded-xl border-2 border-[#1A1A1A]/10 bg-white p-3 text-[#1A1A1A] shadow-sm outline-none transition-all placeholder:text-[#1A1A1A]/20 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20"
+                  style={{ fontFamily: 'Georgia, serif' }}
+                />
+                <button
+                  onClick={handleHostSubmit}
+                  disabled={!answer.trim()}
+                  className={cn(
+                    'mt-2 w-full rounded-full py-2.5 text-xs uppercase tracking-[0.3em] shadow-md transition-all',
+                    'bg-[#5A5A40] text-[#F5F2ED] hover:bg-[#4A4A34] active:scale-[0.98]',
+                    'disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none',
+                  )}
+                >
+                  Submit Answer
+                </button>
+              </>
+            )}
+          </div>
+
           <div className="mb-6 text-center">
             <p className="text-5xl font-light text-[#1A1A1A]">
               {answered} / {totalPlayers}
@@ -387,18 +455,34 @@ export default function HostSession() {
         )}
       </div>
 
-      {/* Revealed answers */}
+      {/* Revealed answers — votable for the host during the voting phase */}
       <div className="flex-1 px-6 py-6">
         <div className="mx-auto max-w-lg space-y-4">
+          {gameState.status === 'voting' && (
+            <p className="mb-1 text-center text-sm text-amber-600">
+              {gameState.hasVoted ? '✓ Vote cast! You can end voting when ready.' : '🗳️ Tap an answer to cast your vote'}
+            </p>
+          )}
           <GameErrorBoundary fallbackMessage="Could not display answers.">
-            {gameState.revealedAnswers.map((ans, i) => (
-              <AnswerCard
-                key={ans.playerId}
-                answer={ans}
-                index={i}
-                isNew={i === gameState.revealedAnswers.length - 1}
-              />
-            ))}
+            {gameState.revealedAnswers.map((ans, i) =>
+              gameState.status === 'voting' ? (
+                <VotingCard
+                  key={ans.playerId}
+                  answer={ans}
+                  voteCount={gameState.votes[ans.playerId] || 0}
+                  hasVoted={gameState.hasVoted}
+                  isSelf={ans.playerId === gameState.playerId}
+                  onVote={() => actions.castVote(ans.playerId)}
+                />
+              ) : (
+                <AnswerCard
+                  key={ans.playerId}
+                  answer={ans}
+                  index={i}
+                  isNew={i === gameState.revealedAnswers.length - 1}
+                />
+              ),
+            )}
           </GameErrorBoundary>
 
           {gameState.revealedAnswers.length === 0 && (
