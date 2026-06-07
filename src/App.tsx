@@ -522,8 +522,32 @@ export default function App() {
       </header>
 
       <main id="main-content" className="flex-grow flex flex-col py-12 max-w-7xl mx-auto w-full">
+        {/* Live-session CTA — prominent entry so hosting isn't buried in the nav */}
+        <div className="px-4 md:px-8 mb-14">
+          <Link
+            to="/play"
+            className="group mx-auto flex max-w-2xl items-center gap-4 rounded-2xl border border-brand/15 bg-accent/[0.06] p-4 sm:p-5 transition-all hover:border-accent/40 hover:shadow-md"
+          >
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-accent text-white">
+              <Play size={20} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-serif text-lg italic text-brand">Host a Live Session</span>
+              <span className="block text-sm leading-snug text-brand/55">
+                Everyone answers the same question on their phones, then reveal &amp; vote — perfect for dinners &amp; teams.
+              </span>
+            </span>
+            <span className="hidden shrink-0 caps-tracking text-[10px] text-accent opacity-60 transition-opacity group-hover:opacity-100 sm:block">
+              Start&nbsp;&rarr;
+            </span>
+          </Link>
+        </div>
+
         {/* Category Selector */}
-        <div className="flex justify-center flex-wrap gap-x-5 gap-y-4 mb-16 px-4 md:px-8">
+        <p className="text-center text-[10px] uppercase tracking-[0.3em] text-brand/30 mb-4 px-4">
+          Choose a theme
+        </p>
+        <div className="flex justify-center flex-wrap gap-x-5 gap-y-4 mb-12 px-4 md:px-8">
           {categories.map((cat) => {
             const isActive = category === cat.label;
             const isPremiumCat = (PREMIUM_CATEGORIES as readonly string[]).includes(cat.label);
@@ -555,6 +579,9 @@ export default function App() {
         </div>
 
         {/* Difficulty Selector */}
+        <p className="text-center text-[10px] uppercase tracking-[0.3em] text-brand/30 mb-4 px-4">
+          How deep? <span className="normal-case tracking-normal opacity-70">· Light = playful, Deep = meaningful</span>
+        </p>
         <div className="flex justify-center gap-4 mb-12">
           {(['Light', 'Deep', 'Random'] as Difficulty[]).map((dif) => {
             const isActive = difficulty === dif;

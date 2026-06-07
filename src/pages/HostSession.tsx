@@ -2,7 +2,9 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useParams, useLocation, Navigate, useNavigate } from 'react-router-dom';
 import { useGameSocket } from '../hooks/useGameSocket';
 import { useGameStatusAnnouncer } from '../hooks/useGameStatusAnnouncer';
-import { QUESTION_BANK } from '../data/questions';
+import { QUESTION_BANK, pickQuestion, pickTopicQuestion } from '../data/questions';
+import { TOPICS } from '../data/topics';
+import { generateUniqueQuestion } from '../services/questionService';
 import Lobby from '../components/game/Lobby';
 import Timer from '../components/game/Timer';
 import PlayerList from '../components/game/PlayerList';
@@ -12,7 +14,7 @@ import RecapCard from '../components/game/RecapCard';
 import QuestionVote from '../components/game/QuestionVote';
 import GameErrorBoundary from '../components/game/GameErrorBoundary';
 import { cn } from '../lib/utils';
-import type { Category } from '../types';
+import type { Category, Difficulty } from '../types';
 
 const ALL_CATEGORIES = Object.keys(QUESTION_BANK) as Category[];
 
@@ -34,10 +36,15 @@ export default function HostSession() {
 
   // Question picker state
   const [showPicker, setShowPicker] = useState(false);
+  const [pickerMode, setPickerMode] = useState<'packs' | 'topics' | 'surprise' | 'custom'>('packs');
+  const [difficulty, setDifficulty] = useState<Difficulty>('Light');
   const [selectedCategory, setSelectedCategory] = useState<Category>('Icebreaker');
+  const [topicGroupId, setTopicGroupId] = useState<string>(TOPICS[0].id);
   const [customQuestion, setCustomQuestion] = useState('');
   const [timerSec, setTimerSec] = useState(180);
   const [usedQuestions, setUsedQuestions] = useState<Set<string>>(new Set());
+  const [surpriseLoading, setSurpriseLoading] = useState(false);
+  const [pickerError, setPickerError] = useState('');
 
   // ALL hooks must be called before any conditional return (React rules of hooks).
   // The `enabled` flag prevents the WebSocket from connecting until we have a hostToken.
@@ -51,19 +58,54 @@ export default function HostSession() {
   // Accessibility: phase-aware document title + screen-reader announcements.
   useGameStatusAnnouncer(gameState, { submitted: false });
 
-  // Build question list for the selected category
+  // Questions for the selected pack, filtered by the chosen depth.
   const categoryQuestions = useMemo(() => {
     const bank = QUESTION_BANK[selectedCategory];
     if (!bank) return [];
-    return [...(bank.Light || []), ...(bank.Deep || [])];
-  }, [selectedCategory]);
+    if (difficulty === 'Light') return bank.Light || [];
+    if (difficulty === 'Deep') return bank.Deep || [];
+    return [...(bank.Light || []), ...(bank.Deep || [])]; // Random/Surprise mix
+  }, [selectedCategory, difficulty]);
+
+  const activeTopicGroup = useMemo(
+    () => TOPICS.find(g => g.id === topicGroupId) ?? TOPICS[0],
+    [topicGroupId],
+  );
 
   const handleStartQuestion = useCallback((text: string, category?: string) => {
     actions.startQuestion(text, timerSec, category);
     setUsedQuestions(prev => new Set(prev).add(text));
     setShowPicker(false);
     setCustomQuestion('');
+    setPickerError('');
   }, [actions, timerSec]);
+
+  // Pick a random question from the selected pack at the chosen depth.
+  const handleRandomFromPack = useCallback(() => {
+    const q = pickQuestion(selectedCategory, difficulty);
+    handleStartQuestion(q.text, selectedCategory);
+  }, [selectedCategory, difficulty, handleStartQuestion]);
+
+  // Pick a random question from a topic sub-pool (e.g. "sports.football").
+  const handleTopicQuestion = useCallback((leafId: string, label: string) => {
+    const q = pickTopicQuestion(leafId, difficulty);
+    handleStartQuestion(q.text, `Topic: ${label}`);
+  }, [difficulty, handleStartQuestion]);
+
+  // Generate a fresh AI question ("Surprise Me").
+  const handleSurprise = useCallback(async () => {
+    setSurpriseLoading(true);
+    setPickerError('');
+    try {
+      const q = await generateUniqueQuestion(selectedCategory, difficulty);
+      if (q.text) handleStartQuestion(q.text, `Surprise: ${selectedCategory}`);
+      else setPickerError('Could not generate a question. Try a pack instead.');
+    } catch (err) {
+      setPickerError(err instanceof Error ? err.message : 'Could not generate a question.');
+    } finally {
+      setSurpriseLoading(false);
+    }
+  }, [selectedCategory, difficulty, handleStartQuestion]);
 
   // ── Host-as-player: the host answers and votes like everyone else ──────────
   const [answer, setAnswer] = useState('');
@@ -205,37 +247,59 @@ export default function HostSession() {
               onStart={() => setShowPicker(true)}
             />
           ) : (
-            /* Question Picker */
-            <div className="w-full max-w-lg">
+            /* Question Picker — host chooses HOW the next question is sourced */
+            <div className="w-full max-w-lg pb-10">
               <button
                 onClick={() => setShowPicker(false)}
-                className="mb-6 text-xs uppercase tracking-wider text-[#1A1A1A]/40 transition-colors hover:text-[#1A1A1A]/60"
+                className="mb-4 text-xs uppercase tracking-wider text-[#1A1A1A]/40 transition-colors hover:text-[#1A1A1A]/60"
               >
                 &larr; Back to lobby
               </button>
 
-              <h2
-                className="mb-6 text-xl font-light italic text-[#1A1A1A]"
-                style={{ fontFamily: 'Georgia, serif' }}
-              >
-                Pick a Question
+              <h2 className="text-2xl font-light italic text-[#1A1A1A]" style={{ fontFamily: 'Georgia, serif' }}>
+                Choose a question
               </h2>
+              <p className="mb-5 mt-1 text-sm text-[#1A1A1A]/45" style={{ fontFamily: 'Georgia, serif' }}>
+                Everyone — including you — answers the one you pick.
+              </p>
 
-              {/* Timer setting */}
-              <div className="mb-6">
-                <label className="mb-2 block text-xs uppercase tracking-wider text-[#1A1A1A]/40">
-                  Timer (seconds)
-                </label>
+              {/* Depth — clarifies the Light vs Deep distinction in plain language */}
+              <div className="mb-5">
+                <label className="mb-1.5 block text-[10px] uppercase tracking-[0.2em] text-[#1A1A1A]/40">Depth</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    ['Light', '☀️ Light', 'Playful & easy'],
+                    ['Deep', '🌙 Deep', 'Meaningful & reflective'],
+                    ['Random', '🎲 Mix', 'A blend of both'],
+                  ] as [Difficulty, string, string][]).map(([d, label, hint]) => (
+                    <button
+                      key={d}
+                      onClick={() => setDifficulty(d)}
+                      className={cn(
+                        'rounded-xl border px-2 py-2.5 text-center transition-all',
+                        difficulty === d
+                          ? 'border-[#5A5A40] bg-[#5A5A40]/10 text-[#5A5A40]'
+                          : 'border-[#1A1A1A]/10 bg-white text-[#1A1A1A]/55 hover:border-[#5A5A40]/30',
+                      )}
+                    >
+                      <span className="block text-sm font-medium">{label}</span>
+                      <span className="mt-0.5 block text-[10px] leading-tight opacity-70">{hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Timer */}
+              <div className="mb-5">
+                <label className="mb-1.5 block text-[10px] uppercase tracking-[0.2em] text-[#1A1A1A]/40">Answer timer</label>
                 <div className="flex gap-2">
                   {[60, 120, 180, 300].map(sec => (
                     <button
                       key={sec}
                       onClick={() => setTimerSec(sec)}
                       className={cn(
-                        'rounded-full px-3 py-1.5 text-xs transition-all',
-                        timerSec === sec
-                          ? 'bg-[#5A5A40] text-[#F5F2ED]'
-                          : 'bg-[#1A1A1A]/5 text-[#1A1A1A]/50 hover:bg-[#1A1A1A]/10',
+                        'flex-1 rounded-full py-2 text-xs transition-all',
+                        timerSec === sec ? 'bg-[#5A5A40] text-[#F5F2ED]' : 'bg-[#1A1A1A]/5 text-[#1A1A1A]/50 hover:bg-[#1A1A1A]/10',
                       )}
                     >
                       {sec < 60 ? `${sec}s` : `${sec / 60}m`}
@@ -244,73 +308,176 @@ export default function HostSession() {
                 </div>
               </div>
 
-              {/* Category tabs */}
-              <div className="mb-4 flex flex-wrap gap-2">
-                {ALL_CATEGORIES.map(cat => (
+              {/* Source mode — Packs / Topics / Surprise / Custom */}
+              <div className="mb-4 grid grid-cols-4 gap-2">
+                {([
+                  ['packs', '📚', 'Packs'],
+                  ['topics', '🌍', 'Topics'],
+                  ['surprise', '✨', 'Surprise'],
+                  ['custom', '✍️', 'Custom'],
+                ] as ['packs' | 'topics' | 'surprise' | 'custom', string, string][]).map(([mode, icon, label]) => (
                   <button
-                    key={cat}
-                    onClick={() => setSelectedCategory(cat)}
+                    key={mode}
+                    onClick={() => { setPickerMode(mode); setPickerError(''); }}
                     className={cn(
-                      'rounded-full px-3 py-1 text-xs transition-all',
-                      selectedCategory === cat
-                        ? 'bg-[#1A1A1A] text-[#F5F2ED]'
-                        : 'bg-[#1A1A1A]/5 text-[#1A1A1A]/50 hover:bg-[#1A1A1A]/10',
+                      'flex flex-col items-center gap-1 rounded-xl border px-1 py-3 transition-all',
+                      pickerMode === mode
+                        ? 'border-[#1A1A1A] bg-[#1A1A1A] text-[#F5F2ED]'
+                        : 'border-[#1A1A1A]/10 bg-white text-[#1A1A1A]/55 hover:border-[#1A1A1A]/30',
                     )}
                   >
-                    {cat}
+                    <span className="text-lg leading-none">{icon}</span>
+                    <span className="text-[10px] uppercase tracking-wider">{label}</span>
                   </button>
                 ))}
               </div>
 
-              {/* Question list */}
-              <div className="mb-6 max-h-60 overflow-y-auto rounded-xl border border-[#1A1A1A]/5 bg-white">
-                {categoryQuestions.map((q, i) => {
-                  const isUsed = usedQuestions.has(q);
-                  return (
-                    <button
-                      key={q}
-                      onClick={() => handleStartQuestion(q, selectedCategory)}
-                      disabled={isUsed}
-                      className={cn(
-                        'block w-full border-b border-[#1A1A1A]/5 px-4 py-3 text-left text-sm transition-colors last:border-b-0',
-                        isUsed
-                          ? 'cursor-not-allowed bg-[#1A1A1A]/5 text-[#1A1A1A]/30 line-through'
-                          : 'text-[#1A1A1A]/70 hover:bg-[#F5F2ED]',
-                      )}
-                      style={{ fontFamily: 'Georgia, serif' }}
-                    >
-                      {q}
-                    </button>
-                  );
-                })}
-              </div>
+              {pickerError && (
+                <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-center text-xs text-red-600">{pickerError}</p>
+              )}
 
-              {/* Custom question */}
-              <div className="rounded-xl border border-[#1A1A1A]/10 bg-white p-4">
-                <p className="mb-2 text-xs uppercase tracking-wider text-[#1A1A1A]/40">
-                  Or write your own
-                </p>
-                <textarea
-                  value={customQuestion}
-                  onChange={e => setCustomQuestion(e.target.value)}
-                  maxLength={500}
-                  rows={2}
-                  placeholder="Type a custom question..."
-                  className="mb-3 w-full resize-none rounded-lg border border-[#1A1A1A]/10 p-3 text-sm text-[#1A1A1A] outline-none placeholder:text-[#1A1A1A]/20 focus:border-[#5A5A40]"
-                  style={{ fontFamily: 'Georgia, serif' }}
-                />
-                <button
-                  onClick={() => handleStartQuestion(customQuestion.trim(), 'Custom')}
-                  disabled={!customQuestion.trim()}
-                  className={cn(
-                    'w-full rounded-full py-2.5 text-xs uppercase tracking-[0.2em] transition-all',
-                    'bg-[#5A5A40] text-[#F5F2ED] hover:bg-[#4A4A34]',
-                    'disabled:cursor-not-allowed disabled:opacity-40',
-                  )}
-                >
-                  Start with Custom Question
-                </button>
-              </div>
+              {/* ── Packs ─────────────────────────────────────────────── */}
+              {pickerMode === 'packs' && (
+                <div>
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {ALL_CATEGORIES.map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(cat)}
+                        className={cn(
+                          'rounded-full px-3 py-1.5 text-xs transition-all',
+                          selectedCategory === cat ? 'bg-[#1A1A1A] text-[#F5F2ED]' : 'bg-[#1A1A1A]/5 text-[#1A1A1A]/55 hover:bg-[#1A1A1A]/10',
+                        )}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={handleRandomFromPack}
+                    className="mb-3 w-full rounded-full bg-[#5A5A40] py-3 text-xs uppercase tracking-[0.2em] text-[#F5F2ED] shadow-md transition-all hover:bg-[#4A4A34] active:scale-[0.98]"
+                  >
+                    🎲 Start a random {selectedCategory} question
+                  </button>
+                  <p className="mb-2 text-[10px] uppercase tracking-wider text-[#1A1A1A]/35">Or pick one ({categoryQuestions.length})</p>
+                  <div className="max-h-52 overflow-y-auto rounded-xl border border-[#1A1A1A]/10 bg-white">
+                    {categoryQuestions.map(q => {
+                      const isUsed = usedQuestions.has(q);
+                      return (
+                        <button
+                          key={q}
+                          onClick={() => handleStartQuestion(q, selectedCategory)}
+                          disabled={isUsed}
+                          className={cn(
+                            'block w-full border-b border-[#1A1A1A]/5 px-4 py-3 text-left text-sm transition-colors last:border-b-0',
+                            isUsed ? 'cursor-not-allowed bg-[#1A1A1A]/5 text-[#1A1A1A]/30 line-through' : 'text-[#1A1A1A]/75 hover:bg-[#F5F2ED]',
+                          )}
+                          style={{ fontFamily: 'Georgia, serif' }}
+                        >
+                          {q}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Topics ────────────────────────────────────────────── */}
+              {pickerMode === 'topics' && (
+                <div>
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {TOPICS.map(g => (
+                      <button
+                        key={g.id}
+                        onClick={() => setTopicGroupId(g.id)}
+                        className={cn(
+                          'rounded-full px-3 py-1.5 text-xs transition-all',
+                          topicGroupId === g.id ? 'bg-[#1A1A1A] text-[#F5F2ED]' : 'bg-[#1A1A1A]/5 text-[#1A1A1A]/55 hover:bg-[#1A1A1A]/10',
+                        )}
+                      >
+                        {g.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mb-2 text-[10px] uppercase tracking-wider text-[#1A1A1A]/35">Tap a topic to start a random question about it</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {activeTopicGroup.children.map(leaf => (
+                      <button
+                        key={leaf.id}
+                        onClick={() => handleTopicQuestion(leaf.id, leaf.label)}
+                        className="rounded-xl border border-[#1A1A1A]/10 bg-white px-4 py-4 text-center text-sm text-[#1A1A1A]/75 shadow-sm transition-all hover:border-[#5A5A40]/40 hover:bg-[#F5F2ED] active:scale-[0.98]"
+                        style={{ fontFamily: 'Georgia, serif' }}
+                      >
+                        {leaf.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Surprise Me (AI) ──────────────────────────────────── */}
+              {pickerMode === 'surprise' && (
+                <div>
+                  <p className="mb-3 text-sm text-[#1A1A1A]/55" style={{ fontFamily: 'Georgia, serif' }}>
+                    AI writes a fresh question in your chosen pack &amp; depth — no repeats.
+                  </p>
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {ALL_CATEGORIES.map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(cat)}
+                        className={cn(
+                          'rounded-full px-3 py-1.5 text-xs transition-all',
+                          selectedCategory === cat ? 'bg-[#1A1A1A] text-[#F5F2ED]' : 'bg-[#1A1A1A]/5 text-[#1A1A1A]/55 hover:bg-[#1A1A1A]/10',
+                        )}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={handleSurprise}
+                    disabled={surpriseLoading}
+                    className="flex w-full items-center justify-center gap-2 rounded-full bg-[#5A5A40] py-3.5 text-xs uppercase tracking-[0.2em] text-[#F5F2ED] shadow-md transition-all hover:bg-[#4A4A34] active:scale-[0.98] disabled:opacity-50"
+                  >
+                    {surpriseLoading ? (
+                      <>
+                        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-[#F5F2ED]/40 border-t-[#F5F2ED]" />
+                        Generating…
+                      </>
+                    ) : (
+                      <>✨ Generate &amp; start a {selectedCategory} question</>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* ── Custom ────────────────────────────────────────────── */}
+              {pickerMode === 'custom' && (
+                <div className="rounded-xl border border-[#1A1A1A]/10 bg-white p-4">
+                  <textarea
+                    value={customQuestion}
+                    onChange={e => setCustomQuestion(e.target.value)}
+                    maxLength={500}
+                    rows={3}
+                    placeholder="Type your own question…"
+                    autoFocus
+                    className="mb-3 w-full resize-none rounded-lg border border-[#1A1A1A]/10 p-3 text-sm text-[#1A1A1A] outline-none placeholder:text-[#1A1A1A]/20 focus:border-[#5A5A40]"
+                    style={{ fontFamily: 'Georgia, serif' }}
+                  />
+                  <button
+                    onClick={() => handleStartQuestion(customQuestion.trim(), 'Custom')}
+                    disabled={!customQuestion.trim()}
+                    className={cn(
+                      'w-full rounded-full py-3 text-xs uppercase tracking-[0.2em] transition-all',
+                      'bg-[#5A5A40] text-[#F5F2ED] hover:bg-[#4A4A34] active:scale-[0.98]',
+                      'disabled:cursor-not-allowed disabled:opacity-40',
+                    )}
+                  >
+                    Start with my question
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
