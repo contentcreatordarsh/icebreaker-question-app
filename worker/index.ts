@@ -1981,7 +1981,8 @@ async function handleFeedback(request: Request, env: Env): Promise<Response> {
  * Stores the feedback, emails the owner, and credits the user's profile.
  * Body: { text, rating? }
  */
-const FEEDBACK_UNLOCK_BONUS = 25; // free questions granted for feedback (one-time)
+const FEEDBACK_UNLOCK_BONUS = 25; // free questions granted per feedback (repeatable)
+const FEEDBACK_UNLOCK_COOLDOWN_SEC = 6; // anti double-submit window between grants
 
 async function handleFeedbackUnlock(request: Request, env: Env): Promise<Response> {
   const auth = await verifyIdToken(request, env);
@@ -2000,12 +2001,15 @@ async function handleFeedbackUnlock(request: Request, env: Env): Promise<Respons
   }
   const rating = typeof body.rating === 'number' ? Math.min(5, Math.max(1, body.rating)) : null;
 
-  // Read current profile to decide whether to grant the (one-time) bonus.
-  let alreadyRewarded = false;
+  // Repeatable unlock: every piece of feedback grants another batch of questions
+  // ("more feedback, more questions"). A short per-user cooldown blocks accidental
+  // double-submits / button-mashing the same feedback, without adding real friction.
+  const cooldownKey = `rl:fbunlock:${auth.uid}`;
+  const onCooldown = !!(await env.APP_KV.get(cooldownKey).catch(() => null));
+
   let currentBonus = 0;
   try {
     const profile = await getFirestoreUser(auth.uid, env);
-    alreadyRewarded = profile?.feedbackRewarded === true;
     currentBonus = typeof profile?.bonusQuestions === 'number' ? profile.bonusQuestions as number : 0;
   } catch (err) {
     console.error('feedback-unlock: profile read failed', err);
@@ -2013,14 +2017,12 @@ async function handleFeedbackUnlock(request: Request, env: Env): Promise<Respons
 
   let granted = 0;
   let newBonus = currentBonus;
-  if (!alreadyRewarded) {
+  if (!onCooldown) {
     granted = FEEDBACK_UNLOCK_BONUS;
     newBonus = currentBonus + granted;
     try {
-      await updateFirestoreUser(auth.uid, {
-        bonusQuestions: newBonus,
-        feedbackRewarded: true,
-      }, env);
+      await updateFirestoreUser(auth.uid, { bonusQuestions: newBonus }, env);
+      await env.APP_KV.put(cooldownKey, '1', { expirationTtl: FEEDBACK_UNLOCK_COOLDOWN_SEC }).catch(() => {});
     } catch (err) {
       console.error('feedback-unlock: grant failed', err);
       return Response.json({ error: 'Could not apply your free questions — please try again.' }, { status: 500 });
@@ -2059,7 +2061,7 @@ async function handleFeedbackUnlock(request: Request, env: Env): Promise<Respons
         <p><strong>Message:</strong></p>
         <blockquote style="border-left:3px solid #5A5A40;padding-left:12px;color:#333;">${text}</blockquote>
         ${auth.email ? `<p><strong>From:</strong> <a href="mailto:${auth.email}">${auth.email}</a></p>` : ''}
-        <p><strong>Granted:</strong> ${granted} free questions ${alreadyRewarded ? '(already rewarded earlier — none added)' : ''}</p>
+        <p><strong>Granted:</strong> ${granted} free questions ${onCooldown ? '(cooldown — none added)' : ''}</p>
         <p style="color:#999;font-size:12px;">uid: ${auth.uid} | ${new Date().toISOString()}</p>
       `;
       await fetch('https://api.resend.com/emails', {
@@ -2077,7 +2079,7 @@ async function handleFeedbackUnlock(request: Request, env: Env): Promise<Respons
     }
   }
 
-  return Response.json({ ok: true, granted, bonusQuestions: newBonus, alreadyRewarded });
+  return Response.json({ ok: true, granted, bonusQuestions: newBonus, onCooldown });
 }
 
 // ── Stats endpoint ───────────────────────────────────────────────────────────

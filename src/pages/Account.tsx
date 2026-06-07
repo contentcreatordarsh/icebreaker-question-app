@@ -221,14 +221,6 @@ export default function Account() {
                   Manage subscription
                 </button>
               )}
-              {!hasSubscription && (
-                <Link
-                  to="/"
-                  className="block w-full sm:w-auto sm:inline-flex items-center justify-center text-[11px] caps-tracking border border-brand/30 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors text-center"
-                >
-                  Upgrade your plan
-                </Link>
-              )}
             </section>
 
             <section className="space-y-4 pt-6 border-t border-brand/10">

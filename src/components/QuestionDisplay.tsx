@@ -3,34 +3,30 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Share2, Heart, CheckCircle2,
   Twitter, Facebook, Linkedin, Instagram, Music,
-  Copy, Check, Zap, Shuffle, Sparkles, Lock, MessageCircle, Send,
+  Copy, Check, Zap, Shuffle, Sparkles, MessageCircle, Send,
 } from 'lucide-react';
 import { db, auth, authedFetch } from '../lib/firebase';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { pickQuestion, poolSize } from '../data/questions';
 import { generateUniqueQuestion, getCategoryGradient, getCategoryAccent } from '../services/questionService';
-import { Category, DailyQuestion, OperationType, Difficulty, UserProfile, PREMIUM_CATEGORIES } from '../types';
+import { Category, DailyQuestion, OperationType, Difficulty, UserProfile } from '../types';
 import { PLANS } from '../constants';
 import { cn } from '../lib/utils';
 import { handleFirestoreError } from '../lib/firestoreUtils';
 
 interface QuestionDisplayProps {
-  isPremium: boolean;
   category: Category;
   difficulty: Difficulty;
   userProfile: UserProfile | null;
-  onUpgrade: () => void;
   shuffleKey?: number;
   overrideQuestion?: DailyQuestion | null;
   onUsageIncremented?: (newCount?: number) => void;
 }
 
 export default function QuestionDisplay({
-  isPremium,
   category,
   difficulty,
   userProfile,
-  onUpgrade,
   shuffleKey = 0,
   overrideQuestion = null,
   onUsageIncremented,
@@ -49,7 +45,6 @@ export default function QuestionDisplay({
   const consumedRef = useRef(false);
 
   // Feedback-to-unlock (at the usage limit): share feedback → get free questions.
-  const [showFeedbackUnlock, setShowFeedbackUnlock] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
   const [unlocking, setUnlocking] = useState(false);
   const [unlockMsg, setUnlockMsg] = useState<string | null>(null);
@@ -64,14 +59,18 @@ export default function QuestionDisplay({
     setUnlockMsg(null);
     try {
       const res = await authedFetch('/api/feedback-unlock', { text });
-      const data = (await res.json()) as { ok?: boolean; granted?: number; alreadyRewarded?: boolean; error?: string };
+      const data = (await res.json()) as { ok?: boolean; granted?: number; onCooldown?: boolean; error?: string };
       if (res.ok && data.ok) {
         if (data.granted && data.granted > 0) {
-          setUnlockMsg(`Thank you! ${data.granted} free questions unlocked.`);
-          // Refresh the profile (no arg → parent re-reads from server), lifting the wall.
+          // Success — clear the box and refresh the profile, which lifts the wall
+          // and drops the user straight onto their next question (no scrolling).
+          setUnlockMsg('✓ Unlocked! Loading your next question…');
+          setFeedbackText('');
           onUsageIncremented?.();
+        } else if (data.onCooldown) {
+          setUnlockMsg('Just a moment — try again in a few seconds.');
         } else {
-          setUnlockMsg('Thanks for the feedback! (You already claimed your free questions earlier.)');
+          setUnlockMsg('Thanks for the feedback!');
         }
       } else {
         setUnlockMsg(data.error || 'Could not submit — please try again.');
@@ -213,12 +212,8 @@ export default function QuestionDisplay({
     }
   }, [category, difficulty, loadInteractionState, consumeAndTick]);
 
-  // Surprise me: Workers AI — premium only. Gate free users to the upgrade modal.
+  // Surprise me: a fresh Workers AI question — free for everyone (counts toward usage).
   const handleSurprise = useCallback(async () => {
-    if (!isPremium) {
-      onUpgrade();
-      return;
-    }
     setSurpriseLoading(true);
     setSurpriseError(null);
     setIsFavorited(false);
@@ -237,7 +232,7 @@ export default function QuestionDisplay({
     } finally {
       setSurpriseLoading(false);
     }
-  }, [category, difficulty, loadInteractionState, isPremium, onUpgrade]);
+  }, [category, difficulty, loadInteractionState]);
 
   const APP_URL = 'https://dinnertablecards.xyz';
 
@@ -345,106 +340,43 @@ export default function QuestionDisplay({
           animate={{ opacity: 1, scale: 1 }}
           className="absolute inset-0 flex flex-col items-center justify-center"
         >
-          <div className="bg-paper/90 backdrop-blur-md border border-brand/20 rounded-sm px-10 py-10 max-w-sm text-center shadow-2xl">
+          <div className="bg-paper/95 backdrop-blur-md border border-brand/20 rounded-sm px-8 py-9 max-w-sm w-full text-center shadow-2xl">
             <Sparkles className="mx-auto mb-4 text-accent" size={24} />
-            {userProfile?.feedbackRewarded && !(unlockMsg && unlockMsg.startsWith('Thank')) ? (
-              /* Already claimed their one-time free batch — gentle hard stop. */
-              <>
-                <h2 className="font-serif text-2xl italic text-brand mb-3">That's all your free questions</h2>
-                <p className="font-serif italic text-brand/60 text-sm leading-relaxed">
-                  Thanks for spending time with Dinner Table Cards — you've used all your free questions.
-                  We're adding more soon, so check back shortly.
-                </p>
-              </>
-            ) : unlockMsg && unlockMsg.startsWith('Thank') ? (
-              /* Success state right after unlocking. */
-              <>
-                <h2 className="font-serif text-2xl italic text-brand mb-3">Unlocked</h2>
-                <p className="text-[12px] caps-tracking text-accent">{unlockMsg}</p>
-              </>
-            ) : (
-              <>
-                <h2 className="font-serif text-2xl italic text-brand mb-3">You've used your free questions</h2>
-                <p className="font-serif italic text-brand/60 mb-6 text-sm leading-relaxed">
-                  Tell us what you think and we'll unlock 25 more — completely free.
-                </p>
-                {!showFeedbackUnlock ? (
-                  <button
-                    onClick={() => setShowFeedbackUnlock(true)}
-                    className="caps-tracking bg-brand text-white px-8 py-3 w-full hover:bg-opacity-90 transition-all text-[11px]"
-                  >
-                    Share feedback · Unlock 25 free
-                  </button>
-                ) : (
-                  <div className="text-left">
-                    <label htmlFor="unlock-feedback" className="text-[9px] caps-tracking opacity-50 block mb-2">
-                      What do you think of Dinner Table Cards?
-                    </label>
-                    <textarea
-                      id="unlock-feedback"
-                      value={feedbackText}
-                      onChange={(e) => { setFeedbackText(e.target.value); setUnlockMsg(null); }}
-                      maxLength={1000}
-                      rows={3}
-                      placeholder="One thing you loved, or one thing we should fix…"
-                      className="w-full border border-brand/20 rounded-sm px-3 py-2 text-sm text-brand bg-white/70 outline-none focus:border-brand/50 resize-none mb-2"
-                    />
-                    {unlockMsg && <p className="text-[10px] text-red-600 mb-2">{unlockMsg}</p>}
-                    <button
-                      onClick={handleFeedbackUnlock}
-                      disabled={unlocking}
-                      className="caps-tracking bg-brand text-white px-6 py-2.5 w-full hover:bg-opacity-90 transition-all text-[10px] disabled:opacity-50"
-                    >
-                      {unlocking ? 'Submitting…' : 'Submit & Unlock 25 Free Questions'}
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
+            <h2 className="font-serif text-2xl italic text-brand mb-2">Keep the conversation going</h2>
+            <p className="font-serif italic text-brand/60 mb-5 text-sm leading-relaxed">
+              Share one quick thought and we&rsquo;ll unlock <strong className="text-brand/80">25 more questions</strong> — free. Every time.
+            </p>
+            <div className="text-left">
+              <textarea
+                id="unlock-feedback"
+                value={feedbackText}
+                onChange={(e) => { setFeedbackText(e.target.value); setUnlockMsg(null); }}
+                onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); handleFeedbackUnlock(); } }}
+                maxLength={1000}
+                rows={3}
+                autoFocus
+                placeholder="One thing you loved, or one thing we should add…"
+                className="w-full border border-brand/20 rounded-sm px-3 py-2 text-sm text-brand bg-white/70 outline-none focus:border-brand/50 resize-none mb-2"
+              />
+              {unlockMsg && (
+                <p className={cn('text-[11px] mb-2', unlockMsg.startsWith('✓') ? 'text-accent' : 'text-red-600')}>{unlockMsg}</p>
+              )}
+              <button
+                onClick={handleFeedbackUnlock}
+                disabled={unlocking || feedbackText.trim().length < 3}
+                className="caps-tracking bg-brand text-white px-6 py-3 w-full hover:bg-opacity-90 transition-all text-[11px] disabled:opacity-40"
+              >
+                {unlocking ? 'Unlocking…' : 'Share & unlock 25 free'}
+              </button>
+              <p className="mt-3 text-[9px] caps-tracking opacity-30">No payment, ever. Your feedback shapes what we build next.</p>
+            </div>
           </div>
         </motion.div>
       </div>
     );
   }
 
-  // ── Premium category gate ─────────────────────────────────────────────────
-  const isPremiumCategory = (PREMIUM_CATEGORIES as readonly string[]).includes(category);
-  if (isPremiumCategory && !isPremium) {
-    const preview = pickQuestion('Deep Talk', difficulty);
-    return (
-      <div className="relative w-full max-w-4xl mx-auto text-center px-4 py-12 min-h-[400px]">
-        {/* Blurred free question as backdrop */}
-        <div className="select-none pointer-events-none" style={{ filter: 'blur(12px)', opacity: 0.3 }}>
-          <span className="caps-tracking opacity-40 mb-12 block">The Daily Provocation</span>
-          <h2 className="font-serif text-5xl md:text-7xl leading-[1.1] text-brand mb-10 tracking-tighter">
-            {preview.text}
-          </h2>
-        </div>
-        {/* Upgrade overlay */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="absolute inset-0 flex flex-col items-center justify-center px-4"
-        >
-          <div className="bg-paper/95 backdrop-blur-md border border-brand/20 rounded-sm px-10 py-10 max-w-sm text-center shadow-2xl">
-            <Sparkles className="mx-auto mb-4 text-accent" size={22} />
-            <p className="text-[9px] caps-tracking opacity-40 mb-2">{category}</p>
-            <h2 className="font-serif text-2xl italic text-brand mb-3">Premium Category</h2>
-            <p className="font-serif italic text-brand/60 mb-6 text-sm leading-relaxed">
-              Unlock {category} along with Philosophy, Creative Sparks, and the full archive.
-            </p>
-            <button
-              onClick={onUpgrade}
-              className="caps-tracking bg-brand text-white px-8 py-3 w-full hover:bg-opacity-90 transition-all text-[11px] mb-3"
-            >
-              Unlock from $2/month
-            </button>
-            <p className="text-[9px] caps-tracking opacity-30">Cancel anytime · No commitment</p>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
+  // Every category is free — there is no paid tier. (Premium gating removed.)
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (loading) {
@@ -470,17 +402,11 @@ export default function QuestionDisplay({
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-6 mx-auto max-w-lg bg-accent/10 border border-accent/20 rounded-sm px-6 py-3 flex items-center justify-between gap-4"
+          className="mb-6 mx-auto max-w-lg bg-accent/10 border border-accent/20 rounded-sm px-6 py-3 text-center"
         >
           <p className="caps-tracking text-[10px] text-accent">
-            {effectiveLimit - userProfile!.usageCount} question{effectiveLimit - userProfile!.usageCount !== 1 ? 's' : ''} remaining on your free plan
+            {effectiveLimit - userProfile!.usageCount} question{effectiveLimit - userProfile!.usageCount !== 1 ? 's' : ''} left · share feedback any time to add 25 more — free
           </p>
-          <button
-            onClick={onUpgrade}
-            className="caps-tracking text-[9px] border border-accent/30 bg-accent/5 px-3 py-1.5 text-accent hover:bg-accent/20 transition-colors whitespace-nowrap"
-          >
-            Unlock more
-          </button>
         </motion.div>
       )}
       <AnimatePresence mode="wait">
@@ -571,7 +497,7 @@ export default function QuestionDisplay({
                 onClick={handleSurprise}
                 disabled={surpriseLoading}
                 className="caps-tracking border border-brand/10 px-5 py-2.5 opacity-50 hover:opacity-100 hover:border-brand/30 transition-all flex items-center gap-2 text-[10px] disabled:opacity-30"
-                title={isPremium ? 'Generate a unique question via Cloudflare Workers AI' : 'Premium feature — upgrade to unlock'}
+                title="Generate a unique question via Cloudflare Workers AI"
               >
                 {surpriseLoading ? (
                   <>
@@ -582,10 +508,8 @@ export default function QuestionDisplay({
                     />
                     Generating…
                   </>
-                ) : isPremium ? (
-                  <><Sparkles size={12} /> Surprise Me</>
                 ) : (
-                  <><Lock size={12} /> Surprise Me</>
+                  <><Sparkles size={12} /> Surprise Me</>
                 )}
               </button>
             </div>

@@ -9,20 +9,18 @@ import { Link } from 'react-router-dom';
 import { auth, db, signInWithGoogle, authedFetch } from './lib/firebase';
 import { doc, getDoc, getDocFromServer, setDoc, serverTimestamp } from 'firebase/firestore';
 import { AnimatePresence } from 'motion/react';
-import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Lock, Play } from 'lucide-react';
+import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Play } from 'lucide-react';
 import QuestionDisplay from './components/QuestionDisplay';
 import PackSelector from './components/PackSelector';
-import PaymentSuccessBanner from './components/PaymentSuccessBanner';
 import OnboardingToast from './components/OnboardingToast';
 
 // Lazy-load overlay/modal components — they're behind user interaction and
 // not needed on first paint. Keeps the initial bundle small.
-const Pricing = lazy(() => import('./components/Pricing'));
 const SearchOverlay = lazy(() => import('./components/SearchOverlay'));
 const AboutOverlay = lazy(() => import('./components/AboutOverlay'));
 const UsageDashboard = lazy(() => import('./components/UsageDashboard'));
 const UserCollections = lazy(() => import('./components/UserCollections'));
-import { Category, Difficulty, UserProfile, DailyQuestion, PREMIUM_CATEGORIES, QuestionPack } from './types';
+import { Category, Difficulty, UserProfile, DailyQuestion, QuestionPack } from './types';
 import { QUESTION_PACKS } from './data/packs';
 import { TOPICS } from './data/topics';
 import { pickTopicQuestion } from './data/questions';
@@ -54,7 +52,6 @@ export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>('Random');
 
   // Overlay visibility
-  const [showPricing, setShowPricing] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
@@ -74,10 +71,6 @@ export default function App() {
   // Topics (two-level: parent group expanded + active leaf pool)
   const [activeTopicParent, setActiveTopicParent] = useState<string | null>(null);
   const [activeTopicLeaf, setActiveTopicLeaf] = useState<string | null>(null);
-
-  // Payment success
-  const [showPaymentBanner, setShowPaymentBanner] = useState(false);
-  const [premiumConfirmed, setPremiumConfirmed] = useState(false);
 
   // ── Profile sync ────────────────────────────────────────────────────────────
   const refreshProfile = useCallback(async (_uid: string) => {
@@ -221,44 +214,6 @@ export default function App() {
     window.history.replaceState({}, '', qs ? `/?${qs}` : '/');
   }, []);
 
-  // ── Payment success detection ───────────────────────────────────────────────
-  // Stripe redirects back with ?payment=success. Poll until the webhook has
-  // updated Firestore (there's a race between redirect and webhook arrival).
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('payment') !== 'success') return;
-
-    // Strip the query param from the URL immediately
-    window.history.replaceState({}, '', '/');
-    setShowPaymentBanner(true);
-
-    if (!user) return;
-
-    let attempts = 0;
-    // Poll every 2s for up to 30s — webhooks can take 5–15s in production.
-    // Uses the server /api/profile endpoint (service account) so we always
-    // see the webhook's server-side write immediately.
-    const poll = setInterval(async () => {
-      attempts++;
-      try {
-        const res = await authedFetch('/api/profile');
-        if (res.ok) {
-          const { profile } = await res.json();
-          if (profile) {
-            setUserProfile(profile as UserProfile);
-            if ((profile as UserProfile).isPremium === true) {
-              setPremiumConfirmed(true);
-              clearInterval(poll);
-              return;
-            }
-          }
-        }
-      } catch { /* retry */ }
-      if (attempts >= 15) clearInterval(poll);
-    }, 2000);
-
-    return () => clearInterval(poll);
-  }, [user, refreshProfile]);
 
   // ── Categories ──────────────────────────────────────────────────────────────
   const categories: { label: Category; icon: React.ElementType }[] = [
@@ -365,16 +320,6 @@ export default function App() {
         Skip to content
       </a>
 
-      {/* Payment success banner */}
-      <AnimatePresence>
-        {showPaymentBanner && (
-          <PaymentSuccessBanner
-            isPremiumConfirmed={premiumConfirmed}
-            onDismiss={() => setShowPaymentBanner(false)}
-          />
-        )}
-      </AnimatePresence>
-
       {/* Decorative Sidebars */}
       <div className="hidden lg:block absolute left-4 top-1/2 -translate-y-1/2 caps-tracking opacity-30 origin-center -rotate-90 whitespace-nowrap">
         Cultivating Meaningful Dialogue
@@ -458,9 +403,6 @@ export default function App() {
                 </button>
               )}
 
-              {userProfile?.isPremium && (
-                <span className="caps-tracking bg-accent/10 py-1 px-3 rounded-sm text-[10px]">Premium</span>
-              )}
             </nav>
           </div>
 
@@ -550,8 +492,6 @@ export default function App() {
         <div className="flex justify-center flex-wrap gap-x-5 gap-y-4 mb-12 px-4 md:px-8">
           {categories.map((cat) => {
             const isActive = category === cat.label;
-            const isPremiumCat = (PREMIUM_CATEGORIES as readonly string[]).includes(cat.label);
-            const isLocked = isPremiumCat && !isPremium;
             return (
               <button
                 key={cat.label}
@@ -560,19 +500,13 @@ export default function App() {
                   setOverrideQuestion(null);
                   setActiveTopicLeaf(null);
                   setActiveTopicParent(null);
-                  if (isLocked) setShowPricing(true);
                 }}
                 className={cn(
                   'caps-tracking pb-2 pt-1 transition-all border-b-2 flex items-center gap-1.5 min-h-[40px]',
                   isActive ? 'border-brand opacity-100' : 'border-transparent opacity-40 hover:opacity-80',
-                  isLocked && 'opacity-30 hover:opacity-60',
                 )}
               >
-                {isLocked && <Lock size={9} />}
                 {cat.label}
-                {isPremiumCat && !isLocked && (
-                  <span className="text-[8px] caps-tracking bg-accent/20 text-accent px-1.5 py-0.5 rounded-sm leading-none">Pro</span>
-                )}
               </button>
             );
           })}
@@ -652,12 +586,12 @@ export default function App() {
           packs={QUESTION_PACKS}
           activePack={activePack}
           packIndex={packIndex}
-          isPremium={isPremium}
+          isPremium={true} /* all content is free — no paid tier */
           onSelectPack={handleSelectPack}
           onExitPack={handleExitPack}
           onPackNext={handlePackNext}
           onPackPrev={handlePackPrev}
-          onUpgrade={() => setShowPricing(true)}
+          onUpgrade={() => {}}
         />
 
         {/* Question Area */}
@@ -669,8 +603,6 @@ export default function App() {
             category={category}
             difficulty={difficulty}
             userProfile={userProfile}
-            onUpgrade={() => setShowPricing(true)}
-            isPremium={isPremium}
             shuffleKey={shuffleKey}
             overrideQuestion={overrideQuestion}
             onUsageIncremented={(newCount?: number) => {
@@ -701,26 +633,6 @@ export default function App() {
           />
         </div>
 
-        {/* Upgrade / Pricing */}
-        <div className="mt-12 w-full px-8 pb-12">
-          {!userProfile?.isPremium && (
-            <div className="border-t border-brand/10 pt-12 text-center">
-              <span className="caps-tracking opacity-40 mb-4 block">Archive Access</span>
-              <button
-                onClick={() => setShowPricing(!showPricing)}
-                className="text-2xl font-serif italic text-brand hover:opacity-60 transition-opacity block mx-auto mb-8"
-              >
-                {showPricing ? 'Continue Dialogue' : 'Unlock the complete archive of over 3,000 provocations'}
-              </button>
-
-              <Suspense fallback={null}>
-                <AnimatePresence>
-                  {showPricing && <Pricing onSuccess={() => setShowPricing(false)} />}
-                </AnimatePresence>
-              </Suspense>
-            </div>
-          )}
-        </div>
       </main>
 
       {/* Footer */}
@@ -815,7 +727,7 @@ export default function App() {
             <UsageDashboard
               userProfile={userProfile}
               onClose={() => setShowUsageDashboard(false)}
-              onUpgrade={() => { setShowUsageDashboard(false); setShowPricing(true); }}
+              onUpgrade={() => setShowUsageDashboard(false)}
             />
           )}
         </AnimatePresence>
