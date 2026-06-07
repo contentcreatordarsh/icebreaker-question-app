@@ -15,7 +15,7 @@ import PackSelector from './components/PackSelector';
 import OnboardingToast from './components/OnboardingToast';
 import AdSlot from './components/AdSlot';
 import ConsentBanner from './components/ConsentBanner';
-import { ADSENSE_SLOT_HOME } from './lib/ads';
+import { ADSENSE_SLOT_HOME, adsConfigured, manageConsent } from './lib/ads';
 
 // Lazy-load overlay/modal components — they're behind user interaction and
 // not needed on first paint. Keeps the initial bundle small.
@@ -698,10 +698,13 @@ export default function App() {
         </div>
 
         <div className="text-right space-y-3">
-          <div className="flex gap-4 justify-end caps-tracking opacity-50">
+          <div className="flex gap-4 justify-end caps-tracking opacity-50 flex-wrap">
             <Link to="/privacy" className="hover:opacity-100 transition-opacity">Privacy</Link>
             <Link to="/terms" className="hover:opacity-100 transition-opacity">Terms</Link>
             <Link to="/account" className="hover:opacity-100 transition-opacity">Account</Link>
+            {adsConfigured() && (
+              <button onClick={manageConsent} className="hover:opacity-100 transition-opacity">Cookie preferences</button>
+            )}
           </div>
           <p className="caps-tracking opacity-40">&copy; 2026 Cultivating Meaningful Dialogue</p>
         </div>

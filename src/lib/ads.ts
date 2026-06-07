@@ -16,6 +16,13 @@ export const ADSENSE_SLOT_HOME = (import.meta.env.VITE_ADSENSE_SLOT_HOME as stri
 const CONSENT_KEY = 'dtc-ad-consent';
 /** Fired (on window) whenever consent changes so AdSlots can re-render. */
 export const CONSENT_EVENT = 'dtc-consent-change';
+/** Fired to (re)open the consent banner — e.g. from a "Cookie preferences" link. */
+export const OPEN_CONSENT_EVENT = 'dtc-open-consent';
+
+/** Re-open the consent banner so a visitor can change their decision. */
+export function manageConsent(): void {
+  window.dispatchEvent(new Event(OPEN_CONSENT_EVENT));
+}
 
 export const adsenseClient = ADSENSE_CLIENT;
 

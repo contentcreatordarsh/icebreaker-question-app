@@ -1,17 +1,27 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { shouldAskConsent, setConsent } from '../lib/ads';
+import { shouldAskConsent, setConsent, getConsent, OPEN_CONSENT_EVENT, adsConfigured } from '../lib/ads';
 
 /**
- * Lightweight cookie-consent banner. Only appears when ads are configured but the
- * visitor hasn't decided yet (so it's invisible until ads are switched on).
+ * Lightweight cookie-consent banner. Appears automatically when ads are configured
+ * but the visitor hasn't decided yet, and can be re-opened any time via the
+ * "Cookie preferences" footer link (OPEN_CONSENT_EVENT) so a decision can change.
  * Declining keeps the app fully usable — it just won't show personalised ads.
  */
 export default function ConsentBanner() {
   const [visible, setVisible] = useState(shouldAskConsent());
 
+  // Allow re-opening from a "Cookie preferences" link (only if ads are configured).
+  useEffect(() => {
+    const onOpen = () => { if (adsConfigured()) setVisible(true); };
+    window.addEventListener(OPEN_CONSENT_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_CONSENT_EVENT, onOpen);
+  }, []);
+
   if (!visible) return null;
+
+  const current = getConsent();
 
   const decide = (value: 'granted' | 'denied') => {
     setConsent(value);
@@ -32,7 +42,8 @@ export default function ConsentBanner() {
           <div className="mx-auto flex max-w-3xl flex-col gap-4 rounded-xl border border-brand/15 bg-paper/95 p-5 shadow-2xl backdrop-blur-md sm:flex-row sm:items-center sm:justify-between">
             <p className="text-[13px] leading-relaxed text-brand/70">
               We show ads to keep Dinner Table Cards free. With your OK, our ad partner may use
-              cookies to make them more relevant. You can decline — the app works either way.{' '}
+              cookies to make them more relevant. You can decline — the app works either way.
+              {current && <span className="opacity-60"> Your current choice: <strong className="text-brand">{current === 'granted' ? 'Accepted' : 'Declined'}</strong>.</span>}{' '}
               <Link to="/privacy" className="underline hover:text-brand">Learn more</Link>.
             </p>
             <div className="flex shrink-0 gap-2">
