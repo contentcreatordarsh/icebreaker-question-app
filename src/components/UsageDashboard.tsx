@@ -10,7 +10,6 @@ import { cn } from '../lib/utils';
 interface UsageDashboardProps {
   userProfile: UserProfile;
   onClose: () => void;
-  onUpgrade: () => void;
 }
 
 function computeDailyAvg(usageCount: number, createdAt: FirestoreTimestamp): string {
@@ -27,7 +26,7 @@ function computeDailyAvg(usageCount: number, createdAt: FirestoreTimestamp): str
   }
 }
 
-export default function UsageDashboard({ userProfile, onClose, onUpgrade }: UsageDashboardProps) {
+export default function UsageDashboard({ userProfile, onClose }: UsageDashboardProps) {
   const currentPlan = PLANS[userProfile.subscriptionPlan || 'free'];
   const usageLimit = currentPlan.limit + (userProfile.bonusQuestions || 0);
   const usagePercent = Math.min((userProfile.usageCount / usageLimit) * 100, 100);
@@ -122,10 +121,9 @@ export default function UsageDashboard({ userProfile, onClose, onUpgrade }: Usag
                 />
               </div>
 
-              {isNearLimit && !userProfile.isPremium && (
+              {isNearLimit && (
                 <p className="text-accent text-[10px] caps-tracking flex items-center gap-2">
-                  <Zap size={10} /> Approaching your limit —{' '}
-                  <button className="underline" onClick={onUpgrade}>upgrade to continue</button>
+                  <Zap size={10} /> Approaching your limit — share quick feedback on the home screen to unlock 25 more, free
                 </p>
               )}
             </div>
@@ -166,40 +164,18 @@ export default function UsageDashboard({ userProfile, onClose, onUpgrade }: Usag
             )}
           </div>
 
-          {/* Plan Comparison */}
-          <div className="space-y-6">
-            <h3 className="text-[10px] caps-tracking opacity-40">Available Upgrades</h3>
-
-            {Object.values(PLANS)
-              .filter(p => p.id !== userProfile.subscriptionPlan)
-              .map((plan) => (
-                <div
-                  key={plan.id}
-                  className="p-6 border border-brand/10 bg-white/30 rounded-sm hover:border-brand/30 transition-all group"
-                >
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h4 className="font-serif italic text-lg">{plan.name}</h4>
-                      <span className="text-[10px] caps-tracking opacity-40">{plan.billing}</span>
-                    </div>
-                    <span className="text-xl font-serif text-brand">{plan.price}</span>
-                  </div>
-                  <ul className="space-y-2 mb-6">
-                    {plan.features.slice(0, 2).map((f) => (
-                      <li key={f} className="text-[10px] caps-tracking opacity-60 flex items-center gap-2">
-                        <div className="w-1 h-1 bg-brand/20 rounded-full" />
-                        {f}
-                      </li>
-                    ))}
-                  </ul>
-                  <button
-                    onClick={onUpgrade}
-                    className="w-full py-3 text-[10px] caps-tracking border border-brand/20 group-hover:bg-brand group-hover:text-white transition-all"
-                  >
-                    Select Tier
-                  </button>
-                </div>
-              ))}
+          {/* How to unlock more — feedback, not payment */}
+          <div className="space-y-4">
+            <h3 className="text-[10px] caps-tracking opacity-40">Unlock more questions</h3>
+            <div className="p-6 border border-brand/10 bg-gradient-to-br from-brand/5 to-accent/5 rounded-sm">
+              <h4 className="font-serif italic text-lg text-brand mb-2">It&rsquo;s all free</h4>
+              <p className="text-[12px] opacity-60 leading-relaxed">
+                Every category, topic, and the live game — no paywall, no card. When you run low,
+                just share a quick thought from the home screen and we&rsquo;ll add{' '}
+                <span className="text-brand font-medium">25 more questions</span>. The more feedback
+                you give, the more you get.
+              </p>
+            </div>
           </div>
         </div>
 

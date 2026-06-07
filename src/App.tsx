@@ -727,7 +727,6 @@ export default function App() {
             <UsageDashboard
               userProfile={userProfile}
               onClose={() => setShowUsageDashboard(false)}
-              onUpgrade={() => setShowUsageDashboard(false)}
             />
           )}
         </AnimatePresence>
