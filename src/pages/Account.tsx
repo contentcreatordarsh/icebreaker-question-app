@@ -4,7 +4,7 @@ import { ChevronLeft, Loader2 } from 'lucide-react';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { doc, getDocFromServer } from 'firebase/firestore';
 import { deleteUser, reauthenticateWithPopup } from 'firebase/auth';
-import { auth, db, authedFetch, googleProvider, signInWithGoogle } from '../lib/firebase';
+import { auth, getDb, authedFetch, googleProvider, signInWithGoogle } from '../lib/firebase';
 import { PLANS } from '../constants';
 import { UserProfile } from '../types';
 
@@ -29,6 +29,7 @@ export default function Account() {
     }
     (async () => {
       try {
+        const db = await getDb();
         const snap = await getDocFromServer(doc(db, 'users', user.uid));
         if (snap.exists()) setProfile(snap.data() as UserProfile);
       } catch (err) {
@@ -50,6 +51,7 @@ export default function Account() {
         // Must use getDocFromServer — the reset is a server-side write that
         // bypasses the Firestore client cache.
         if (user) {
+          const db = await getDb();
           const snap = await getDocFromServer(doc(db, 'users', user.uid));
           if (snap.exists()) setProfile(snap.data() as UserProfile);
         }

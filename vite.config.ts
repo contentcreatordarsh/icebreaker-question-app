@@ -56,7 +56,10 @@ export default defineConfig({
       output: {
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-          'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore'],
+          // Firestore is intentionally NOT pinned here so it can code-split into
+          // its own lazy chunk (loaded on first getDb() call) — keeps ~60KB gz off
+          // the first-paint path. Only app+auth stay eager (initial auth check).
+          'vendor-firebase': ['firebase/app', 'firebase/auth'],
           'vendor-motion': ['motion'],
           'vendor-ui': ['lucide-react', 'clsx', 'tailwind-merge'],
         },

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { X, TrendingUp, Flame, Bookmark, Award, Zap, Gift, Copy, Check } from 'lucide-react';
-import { db, auth } from '../lib/firebase';
+import { getDb, auth } from '../lib/firebase';
 import { collection, getCountFromServer } from 'firebase/firestore';
 import { UserProfile, FirestoreTimestamp } from '../types';
 import { PLANS } from '../constants';
@@ -40,6 +40,7 @@ export default function UsageDashboard({ userProfile, onClose }: UsageDashboardP
     if (!uid) return;
     (async () => {
       try {
+        const db = await getDb();
         const [favSnap, histSnap] = await Promise.all([
           getCountFromServer(collection(db, 'users', uid, 'favorites')),
           getCountFromServer(collection(db, 'users', uid, 'history')),

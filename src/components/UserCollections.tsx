@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { db, auth } from '../lib/firebase';
+import { getDb, auth } from '../lib/firebase';
 import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 import { DailyQuestion, Category } from '../types';
 import { X, Bookmark, History as HistoryIcon, Copy, Check, ArrowRight } from 'lucide-react';
@@ -35,6 +35,7 @@ export default function UserCollections({ onClose, onSelectQuestion }: UserColle
 
       const path = `users/${auth.currentUser.uid}/${activeTab}`;
       const orderField = activeTab === 'favorites' ? 'savedAt' : 'discussedAt';
+      const db = await getDb();
       const q = query(collection(db, path), orderBy(orderField, 'desc'), limit(50));
 
       try {

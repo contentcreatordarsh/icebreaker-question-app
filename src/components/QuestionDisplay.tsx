@@ -5,7 +5,7 @@ import {
   Twitter, Facebook, Linkedin, Instagram, Music,
   Copy, Check, Zap, Shuffle, Sparkles, MessageCircle, Send,
 } from 'lucide-react';
-import { db, auth, authedFetch } from '../lib/firebase';
+import { getDb, auth, authedFetch } from '../lib/firebase';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { pickQuestion, poolSize } from '../data/questions';
 import { generateUniqueQuestion, getCategoryGradient, getCategoryAccent } from '../services/questionService';
@@ -87,6 +87,7 @@ export default function QuestionDisplay({
 
   const loadInteractionState = useCallback(async (q: DailyQuestion) => {
     if (!auth.currentUser) return;
+    const db = await getDb();
     const favRef  = doc(db, 'users', auth.currentUser.uid, 'favorites', q.questionId);
     const histRef = doc(db, 'users', auth.currentUser.uid, 'history',   q.questionId);
     const [favSnap, histSnap] = await Promise.all([getDoc(favRef), getDoc(histRef)]);
@@ -161,6 +162,7 @@ export default function QuestionDisplay({
 
       setLoading(true);
       const today  = new Date().toISOString().split('T')[0];
+      const db = await getDb();
       const docRef = doc(db, 'daily_questions', `${today}_${category}_${difficulty}`);
 
       try {
@@ -286,6 +288,7 @@ export default function QuestionDisplay({
 
   const toggleFavorite = async () => {
     if (!auth.currentUser || !dailyQuestion) return;
+    const db = await getDb();
     const favRef = doc(db, 'users', auth.currentUser.uid, 'favorites', dailyQuestion.questionId);
     try {
       if (isFavorited) {
@@ -304,6 +307,7 @@ export default function QuestionDisplay({
 
   const markDiscussed = async () => {
     if (!auth.currentUser || !dailyQuestion || isDiscussed) return;
+    const db = await getDb();
     const histRef = doc(db, 'users', auth.currentUser.uid, 'history', dailyQuestion.questionId);
     try {
       await setDoc(histRef, { ...dailyQuestion, discussedAt: serverTimestamp() });

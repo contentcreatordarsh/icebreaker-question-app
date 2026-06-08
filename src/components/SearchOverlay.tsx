@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Search, X, Heart, History as HistoryIcon, Globe, ArrowRight } from 'lucide-react';
-import { db, auth } from '../lib/firebase';
+import { getDb, auth } from '../lib/firebase';
 import { collection, query, getDocs, limit } from 'firebase/firestore';
 import { DailyQuestion } from '../types';
 import { cn } from '../lib/utils';
@@ -39,6 +39,7 @@ export default function SearchOverlay({ onClose, onSelectQuestion }: SearchOverl
     const allResults: SearchResult[] = [];
 
     try {
+      const db = await getDb();
       // 1. Global pool (cached daily questions)
       const dailySnap = await getDocs(query(collection(db, 'daily_questions'), limit(100)));
       dailySnap.forEach(doc => {

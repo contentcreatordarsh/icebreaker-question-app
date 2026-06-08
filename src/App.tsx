@@ -6,8 +6,7 @@
 import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { Link } from 'react-router-dom';
-import { auth, db, signInWithGoogle, authedFetch } from './lib/firebase';
-import { doc, getDoc, getDocFromServer, setDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, getDb, signInWithGoogle, authedFetch } from './lib/firebase';
 import { AnimatePresence } from 'motion/react';
 import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Play } from 'lucide-react';
 import OnboardingToast from './components/OnboardingToast';
@@ -86,18 +85,19 @@ export default function App() {
       }
     } catch { /* fall through */ }
 
-    // Fallback: try direct Firestore reads
+    // Fallback: try direct Firestore reads (Firestore SDK is lazy-loaded here).
     try {
+      const { doc, getDoc, getDocFromServer } = await import('firebase/firestore');
+      const db = await getDb();
       const docRef = doc(db, 'users', _uid);
-      const snap = await getDocFromServer(docRef);
-      if (snap.exists()) setUserProfile(snap.data() as UserProfile);
-    } catch {
       try {
-        const docRef = doc(db, 'users', _uid);
+        const snap = await getDocFromServer(docRef);
+        if (snap.exists()) setUserProfile(snap.data() as UserProfile);
+      } catch {
         const snap = await getDoc(docRef);
         if (snap.exists()) setUserProfile(snap.data() as UserProfile);
-      } catch { /* give up silently */ }
-    }
+      }
+    } catch { /* give up silently */ }
   }, []);
 
   useEffect(() => {
@@ -140,8 +140,10 @@ export default function App() {
       }
 
       // Fallback: read/create via client-side Firestore (works when the
-      // named database security rules allow it).
+      // named database security rules allow it). Firestore SDK is lazy-loaded.
       try {
+        const { doc, getDoc, setDoc, serverTimestamp } = await import('firebase/firestore');
+        const db = await getDb();
         const docRef = doc(db, 'users', user.uid);
         const docSnap = await getDoc(docRef);
 
