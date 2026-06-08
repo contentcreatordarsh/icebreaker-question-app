@@ -31,7 +31,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="DT Cards" />
-    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
 
     <!-- Open Graph / Social sharing -->
     <meta property="og:type" content="website" />
@@ -104,9 +104,22 @@
       ]
     }
     </script>
+    <!-- Instant branded splash shown before React mounts (replaced on hydrate).
+         Avoids a blank-screen flash for first-time visitors from social links. -->
+    <style>
+      #boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#F5F2ED;color:#1A1A1A;gap:.7rem;z-index:9999}
+      #boot .t{font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:1.7rem;animation:bp 1.6s ease-in-out infinite}
+      #boot .s{font-family:system-ui,-apple-system,sans-serif;font-size:.62rem;letter-spacing:.32em;text-transform:uppercase;opacity:.35}
+      @keyframes bp{0%,100%{opacity:.55}50%{opacity:1}}
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot" aria-hidden="true">
+        <div class="t">Dinner Table Cards</div>
+        <div class="s">setting the table&hellip;</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
     <!-- Cloudflare Web Analytics: active via "Automatic setup" (injected at edge). -->
   </body>
