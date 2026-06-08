@@ -10,14 +10,14 @@ import { auth, db, signInWithGoogle, authedFetch } from './lib/firebase';
 import { doc, getDoc, getDocFromServer, setDoc, serverTimestamp } from 'firebase/firestore';
 import { AnimatePresence } from 'motion/react';
 import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Play } from 'lucide-react';
-import QuestionDisplay from './components/QuestionDisplay';
-import PackSelector from './components/PackSelector';
 import OnboardingToast from './components/OnboardingToast';
 import AdSlot from './components/AdSlot';
 import { ADSENSE_SLOT_HOME } from './lib/ads';
 
 // Lazy-load overlay/modal components — they're behind user interaction and
 // not needed on first paint. Keeps the initial bundle small.
+const QuestionDisplay = lazy(() => import('./components/QuestionDisplay'));
+const PackSelector = lazy(() => import('./components/PackSelector'));
 const SearchOverlay = lazy(() => import('./components/SearchOverlay'));
 const AboutOverlay = lazy(() => import('./components/AboutOverlay'));
 const UsageDashboard = lazy(() => import('./components/UsageDashboard'));
@@ -583,6 +583,9 @@ export default function App() {
           )}
         </div>
 
+        {/* PackSelector + QuestionDisplay are lazy-loaded so signed-out visitors
+            (the viral landing entry) don't download them or the question data. */}
+        <Suspense fallback={<div className="flex-grow flex items-center justify-center min-h-[300px]"><div className="w-6 h-6 border-2 border-brand/20 border-t-brand rounded-full animate-spin" /></div>}>
         {/* Question Packs */}
         <PackSelector
           packs={QUESTION_PACKS}
@@ -634,6 +637,7 @@ export default function App() {
             }}
           />
         </div>
+        </Suspense>
 
       </main>
 
