@@ -37,12 +37,15 @@ export default function AdSlot({ slot, className }: AdSlotProps) {
       /* adsbygoogle not ready — AdSense retries automatically */
     }
     // Watch AdSense's fill signal so we only reveal the label/spacing once filled.
-    const obs = new MutationObserver(() => {
+    const readStatus = () => {
       const s = ins.getAttribute('data-ad-status');
       if (s === 'filled') setStatus('filled');
       else if (s === 'unfilled') setStatus('unfilled');
-    });
+    };
+    const obs = new MutationObserver(readStatus);
     obs.observe(ins, { attributes: true, attributeFilter: ['data-ad-status'] });
+    // AdSense may have set the attribute before the observer attached — check now.
+    readStatus();
     return () => obs.disconnect();
   }, [slot]);
 

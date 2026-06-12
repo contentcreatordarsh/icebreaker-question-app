@@ -55,8 +55,13 @@ export default function HostSession() {
     enabled: !!roomCode && !!hostToken,
   });
 
-  // Accessibility: phase-aware document title + screen-reader announcements.
-  useGameStatusAnnouncer(gameState, { submitted: false });
+  // ── Host-as-player: the host answers and votes like everyone else ──────────
+  const [answer, setAnswer] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+
+  // Accessibility: phase-aware document title + screen-reader announcements
+  // (including the host's own answer submission).
+  useGameStatusAnnouncer(gameState, { submitted });
 
   // Questions for the selected pack, filtered by the chosen depth.
   const categoryQuestions = useMemo(() => {
@@ -107,10 +112,6 @@ export default function HostSession() {
     }
   }, [selectedCategory, difficulty, handleStartQuestion]);
 
-  // ── Host-as-player: the host answers and votes like everyone else ──────────
-  const [answer, setAnswer] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-
   // Reset the host's answer state whenever a new question starts.
   const questionRef = useRef(gameState.currentQuestion?.text);
   useEffect(() => {
@@ -132,8 +133,14 @@ export default function HostSession() {
 
   const handleEndAndLeave = useCallback(() => {
     actions.endSession();
-    setTimeout(() => navigate('/'), 500);
-  }, [actions, navigate]);
+    // If questions were played, STAY: the 'ended' state renders the recap card +
+    // final standings (navigating away here used to hide them from the host —
+    // the person most likely to share the recap). From the lobby with nothing
+    // played there's no recap to show, so go home.
+    if (!gameState.currentQuestion) {
+      setTimeout(() => navigate('/'), 400);
+    }
+  }, [actions, navigate, gameState.currentQuestion]);
 
   // Redirect home if no hostToken (placed after all hooks)
   if (!hostToken) {

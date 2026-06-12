@@ -1409,7 +1409,10 @@ async function handleFeedback(request: Request, env: Env): Promise<Response> {
  * Body: { text, rating? }
  */
 const FEEDBACK_UNLOCK_BONUS = 25; // free questions granted per feedback (repeatable)
-const FEEDBACK_UNLOCK_COOLDOWN_SEC = 6; // anti double-submit window between grants
+// Anti-spam window between grants. NOTE: Cloudflare KV rejects expirationTtl < 60,
+// so this is the minimum possible cooldown (a 6s value silently failed to persist,
+// which disabled the cooldown entirely — infinite grant farming + email spam).
+const FEEDBACK_UNLOCK_COOLDOWN_SEC = 60;
 
 async function handleFeedbackUnlock(request: Request, env: Env): Promise<Response> {
   const auth = await verifyIdToken(request, env);
@@ -1449,7 +1452,10 @@ async function handleFeedbackUnlock(request: Request, env: Env): Promise<Respons
     newBonus = currentBonus + granted;
     try {
       await updateFirestoreUser(auth.uid, { bonusQuestions: newBonus }, env);
-      await env.APP_KV.put(cooldownKey, '1', { expirationTtl: FEEDBACK_UNLOCK_COOLDOWN_SEC }).catch(() => {});
+      // Log put failures instead of swallowing them — a silent failure here is
+      // exactly how the cooldown was disabled before (TTL < 60 rejected by KV).
+      await env.APP_KV.put(cooldownKey, '1', { expirationTtl: FEEDBACK_UNLOCK_COOLDOWN_SEC })
+        .catch((e) => console.error('feedback-unlock: cooldown put failed', e));
     } catch (err) {
       console.error('feedback-unlock: grant failed', err);
       return Response.json({ error: 'Could not apply your free questions — please try again.' }, { status: 500 });

@@ -339,7 +339,8 @@ export default function PlaySession() {
                 className="mb-2 w-full resize-none rounded-xl border-2 border-[#1A1A1A]/10 bg-white p-4 text-[#1A1A1A] shadow-sm outline-none transition-all placeholder:text-[#1A1A1A]/20 focus:border-[#5A5A40] focus:ring-2 focus:ring-[#5A5A40]/20"
                 style={{ fontFamily: 'Georgia, serif' }}
               />
-              <p id="answer-hint" className="mb-4 text-center text-[10px] uppercase tracking-wider text-[#1A1A1A]/30">
+              {/* Keyboard hint — only meaningful on devices that have a keyboard */}
+              <p id="answer-hint" className="mb-4 hidden text-center text-[10px] uppercase tracking-wider text-[#1A1A1A]/30 [@media(hover:hover)]:block">
                 Press ⌘/Ctrl + Enter to submit
               </p>
               <button

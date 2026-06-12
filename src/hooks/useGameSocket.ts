@@ -257,6 +257,11 @@ export function useGameSocket({
   const cleanupListenersRef = useRef<(() => void) | null>(null);
   const maxRetries = 3;
 
+  // Latest game status, readable from long-lived listeners (e.g. the
+  // visibilitychange reconnect) without re-running the connect effect.
+  const statusRef = useRef(state.game.status);
+  statusRef.current = state.game.status;
+
   // Send a typed message over the WebSocket
   const sendMessage = useCallback((msg: GameClientMessage) => {
     const ws = wsRef.current;
@@ -350,8 +355,26 @@ export function useGameSocket({
 
     connect();
 
+    // Phones drop the socket when locked/backgrounded, and the capped retries
+    // can exhaust before the player returns — leaving a dead "please refresh"
+    // screen. When the tab becomes visible again, reset the budget and
+    // reconnect immediately (the join flow restores identity server-side).
+    const onVisible = () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      // Never reconnect into a finished session — it would replace the recap
+      // screen with a join error.
+      if (statusRef.current === 'ended') return;
+      const ws = wsRef.current;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      retriesRef.current = 0;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      connect();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (cleanupListenersRef.current) cleanupListenersRef.current();
       const ws = wsRef.current;
