@@ -23,6 +23,10 @@ interface Env {
   RESEND_FROM?: string;   // e.g. "Dinner Table Cards <noreply@yourdomain.com>"
   // Error monitoring (optional — no-op when unset). Set via `wrangler secret put SENTRY_DSN`.
   SENTRY_DSN?: string;
+  // Cloudflare GraphQL Analytics (optional — admin dashboard "Platform Scale" panel).
+  // Token: wrangler secret put CLOUDFLARE_ANALYTICS_TOKEN (needs Account/Zone Analytics:Read).
+  CLOUDFLARE_ANALYTICS_TOKEN?: string;
+  CLOUDFLARE_ZONE_ID?: string;   // set in wrangler.toml [vars]; the zone is public-ish, not a secret
   // (ADMIN_SECRET removed — admin routes now require a Firebase ID token from an admin email)
 }
 
@@ -1693,11 +1697,97 @@ async function kvPrefixCounts(env: Env, prefix: string): Promise<{ key: string; 
   return entries.filter((e) => e.count > 0).sort((a, b) => b.count - a.count);
 }
 
+interface CloudflareAnalytics {
+  requests24h: number;
+  prevRequests24h: number;
+  growthPct: number | null;
+  countriesReached: number;
+  topCountries: { code: string; requests: number }[];
+  peakHour: { hour: string; requests: number } | null;
+  hourly: { hour: string; requests: number }[];
+}
+
+/**
+ * Pull edge-level platform stats from Cloudflare's GraphQL Analytics API:
+ * total HTTP/Worker requests over the last 24h (and the prior 24h for growth),
+ * a per-country breakdown, and an hourly series (for the peak hour + sparkline).
+ * Returns null (panel hidden) when the token/zone aren't configured or on error.
+ */
+async function fetchCloudflareAnalytics(env: Env): Promise<CloudflareAnalytics | null> {
+  if (!env.CLOUDFLARE_ANALYTICS_TOKEN || !env.CLOUDFLARE_ZONE_ID) return null;
+  const HOUR = 3_600_000;
+  const alignHour = (ms: number) => new Date(Math.floor(ms / HOUR) * HOUR).toISOString();
+  const now = Date.now();
+  const until = alignHour(now + HOUR);   // up to the current hour bucket
+  const since = alignHour(now - 24 * HOUR);
+  const prevSince = alignHour(now - 48 * HOUR);
+
+  const query = `query($zoneTag:String!,$since:Time!,$until:Time!,$prevSince:Time!){
+    viewer{zones(filter:{zoneTag:$zoneTag}){
+      hourly:httpRequests1hGroups(limit:48,filter:{datetime_geq:$since,datetime_lt:$until},orderBy:[datetime_ASC]){
+        dimensions{datetime} sum{requests countryMap{clientCountryName requests}}
+      }
+      prev:httpRequests1hGroups(limit:48,filter:{datetime_geq:$prevSince,datetime_lt:$since}){ sum{requests} }
+    }}
+  }`;
+
+  try {
+    const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.CLOUDFLARE_ANALYTICS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables: { zoneTag: env.CLOUDFLARE_ZONE_ID, since, until, prevSince } }),
+    });
+    if (!res.ok) { console.error('CF analytics HTTP', res.status, await res.text()); return null; }
+    const json = await res.json() as {
+      errors?: unknown[];
+      data?: { viewer?: { zones?: Array<{
+        hourly?: Array<{ dimensions: { datetime: string }; sum: { requests: number; countryMap?: Array<{ clientCountryName: string; requests: number }> } }>;
+        prev?: Array<{ sum: { requests: number } }>;
+      }> } };
+    };
+    if (json.errors?.length) { console.error('CF analytics GraphQL errors', JSON.stringify(json.errors)); return null; }
+    const zone = json.data?.viewer?.zones?.[0];
+    if (!zone) return null;
+
+    const hourly: { hour: string; requests: number }[] = [];
+    const countryReq: Record<string, number> = {};
+    let total = 0;
+    for (const h of zone.hourly ?? []) {
+      const reqs = h.sum?.requests ?? 0;
+      total += reqs;
+      hourly.push({ hour: h.dimensions.datetime, requests: reqs });
+      for (const c of h.sum?.countryMap ?? []) {
+        if (c.clientCountryName) countryReq[c.clientCountryName] = (countryReq[c.clientCountryName] ?? 0) + c.requests;
+      }
+    }
+    const prevTotal = (zone.prev ?? []).reduce((a, h) => a + (h.sum?.requests ?? 0), 0);
+    const topCountries = Object.entries(countryReq)
+      .map(([code, requests]) => ({ code, requests }))
+      .sort((a, b) => b.requests - a.requests);
+    const peak = hourly.reduce<{ hour: string; requests: number } | null>(
+      (best, b) => (!best || b.requests > best.requests ? b : best), null);
+
+    return {
+      requests24h: total,
+      prevRequests24h: prevTotal,
+      growthPct: prevTotal > 0 ? Math.round(((total - prevTotal) / prevTotal) * 100) : null,
+      countriesReached: topCountries.filter((c) => c.requests > 0).length,
+      topCountries: topCountries.slice(0, 8),
+      peakHour: peak,
+      hourly,
+    };
+  } catch (err) {
+    console.error('CF analytics fetch failed', err);
+    return null;
+  }
+}
+
 /**
  * GET /api/admin/dashboard-stats — Admin-only. Rich analytics payload:
  * lifetime counters, derived engagement ratios, 14-day trend, geography,
  * category popularity, crowd question-vote leaderboards (the signal for tuning
- * prompts), feedback rating distribution, and registered-user / usage stats.
+ * prompts), feedback rating distribution, registered-user / usage stats, and
+ * (when configured) Cloudflare edge platform metrics.
  */
 async function handleAdminDashboardStats(request: Request, env: Env): Promise<Response> {
   const admin = await requireAdmin(request, env);
@@ -1861,6 +1951,9 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
     completionRate: sN > 0 ? Math.round((pCnt / sN) * 100) : null, // % of sessions that finished a round
   };
 
+  // ── Cloudflare edge platform metrics (best-effort; null when unconfigured) ──
+  const cloudflare = await fetchCloudflareAnalytics(env).catch(() => null);
+
   return Response.json({
     generatedAt: new Date().toISOString(),
     totals: {
@@ -1878,6 +1971,7 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
     questionVotes,
     feedback,
     users,
+    cloudflare,
   });
 }
 

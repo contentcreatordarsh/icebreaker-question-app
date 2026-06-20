@@ -4,11 +4,13 @@ import { useAuthState } from 'react-firebase-hooks/auth';
 import {
   ChevronLeft, RefreshCw, Users, Zap, MessageSquare, Star, TrendingUp,
   Clock, ThumbsUp, ThumbsDown, Globe, Tags, UserCheck, Crown, Gauge, Activity,
+  Cloud, Server, MapPin, ArrowUpRight, ArrowDownRight,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { auth, authedGet } from '../lib/firebase';
 import { fadeUp, staggerContainer } from '../lib/animations';
 import { codeToFlag, codeToName } from '../lib/flags';
+import { cn } from '../lib/utils';
 
 const ADMIN_EMAILS = ['darshan.p.hegde@gmail.com'];
 
@@ -32,6 +34,15 @@ interface DashboardStats {
   questionVotes: { totalUp: number; totalDown: number; totalRated: number; topLiked: VoteRow[]; topDisliked: VoteRow[] };
   feedback: { total: number; ratedCount: number; avgRating: number | null; distribution: number[] };
   users: { total: number; sampled: number; active: number; premium: number; hitFreeLimit: number; avgUsage: number; freeLimit: number };
+  cloudflare: {
+    requests24h: number;
+    prevRequests24h: number;
+    growthPct: number | null;
+    countriesReached: number;
+    topCountries: { code: string; requests: number }[];
+    peakHour: { hour: string; requests: number } | null;
+    hourly: { hour: string; requests: number }[];
+  } | null;
 }
 
 interface FeedbackItem {
@@ -163,6 +174,9 @@ export default function AdminDashboard() {
               <StatCard icon={Star} value={stats.totals.feedback} label="Feedback" color="stone" />
             </motion.div>
 
+            {/* ── Platform Scale (Cloudflare edge metrics) ──────────────── */}
+            {stats.cloudflare && <CloudflarePanel cf={stats.cloudflare} />}
+
             {/* ── Engagement / quality ratios ───────────────────────────── */}
             <Panel icon={Gauge} title="Engagement & Quality">
               <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
@@ -276,6 +290,88 @@ function Panel({ icon: Icon, title, subtitle, children }: {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="text-sm italic text-[#1A1A1A]/40" style={{ fontFamily: 'Georgia, serif' }}>{children}</p>;
+}
+
+function CloudflarePanel({ cf }: { cf: NonNullable<DashboardStats['cloudflare']> }) {
+  const peakLabel = cf.peakHour
+    ? `${new Date(cf.peakHour.hour).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' })} UTC`
+    : '—';
+  const maxHour = Math.max(...cf.hourly.map((h) => h.requests), 1);
+  return (
+    <motion.div
+      variants={fadeUp} initial="hidden" animate="visible"
+      className="mb-6 rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50/70 to-white p-6 shadow-sm"
+    >
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Cloud size={15} className="text-sky-600" />
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A]/60">Platform Scale</h2>
+        </div>
+        <span className="text-[10px] uppercase tracking-wider text-[#1A1A1A]/30">Cloudflare edge · last 24h</span>
+      </div>
+
+      {/* Big metrics */}
+      <div className="mb-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div>
+          <div className="mb-1 flex items-center gap-1.5 text-[#1A1A1A]/40"><Server size={12} /><span className="text-[10px] uppercase tracking-wider">Requests</span></div>
+          <p className="text-2xl font-bold text-[#1A1A1A] tabular-nums">{fmtCompact(cf.requests24h)}</p>
+          {cf.growthPct != null && (
+            <p className={cn('mt-0.5 flex items-center gap-0.5 text-[11px] font-medium', cf.growthPct >= 0 ? 'text-emerald-600' : 'text-red-500')}>
+              {cf.growthPct >= 0 ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+              {cf.growthPct >= 0 ? '+' : ''}{cf.growthPct}% vs prev 24h
+            </p>
+          )}
+        </div>
+        <div>
+          <div className="mb-1 flex items-center gap-1.5 text-[#1A1A1A]/40"><MapPin size={12} /><span className="text-[10px] uppercase tracking-wider">Countries</span></div>
+          <p className="text-2xl font-bold text-[#1A1A1A] tabular-nums">{cf.countriesReached}</p>
+          <p className="mt-0.5 text-[11px] text-[#1A1A1A]/35">reached</p>
+        </div>
+        <div>
+          <div className="mb-1 flex items-center gap-1.5 text-[#1A1A1A]/40"><Clock size={12} /><span className="text-[10px] uppercase tracking-wider">Peak hour</span></div>
+          <p className="text-2xl font-bold text-[#1A1A1A] tabular-nums">{peakLabel}</p>
+          <p className="mt-0.5 text-[11px] text-[#1A1A1A]/35">{cf.peakHour ? `${fmtCompact(cf.peakHour.requests)} reqs` : ''}</p>
+        </div>
+        <div>
+          <div className="mb-1 flex items-center gap-1.5 text-[#1A1A1A]/40"><TrendingUp size={12} /><span className="text-[10px] uppercase tracking-wider">Prev 24h</span></div>
+          <p className="text-2xl font-bold text-[#1A1A1A]/40 tabular-nums">{fmtCompact(cf.prevRequests24h)}</p>
+          <p className="mt-0.5 text-[11px] text-[#1A1A1A]/35">for comparison</p>
+        </div>
+      </div>
+
+      {/* Hourly sparkline */}
+      {cf.hourly.length > 0 && (
+        <div className="mb-5">
+          <p className="mb-1.5 text-[10px] uppercase tracking-wider text-[#1A1A1A]/35">Requests / hour</p>
+          <div className="flex h-12 items-end gap-0.5">
+            {cf.hourly.map((h) => (
+              <div
+                key={h.hour}
+                className="flex-1 rounded-sm bg-sky-400/70"
+                style={{ height: `${Math.max(4, (h.requests / maxHour) * 100)}%` }}
+                title={`${new Date(h.hour).toLocaleTimeString('en-US', { hour: '2-digit', timeZone: 'UTC' })} UTC · ${h.requests} reqs`}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Top countries */}
+      {cf.topCountries.length > 0 && (
+        <div>
+          <p className="mb-2 text-[10px] uppercase tracking-wider text-[#1A1A1A]/35">Traffic by country</p>
+          <BarList items={cf.topCountries.map((c) => ({ label: `${codeToFlag(c.code)} ${codeToName(c.code)}`, count: c.requests }))} />
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+/** Compact number formatting: 3000 -> 3.0K, 1500000 -> 1.5M. */
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
 }
 
 function Metric({ icon: Icon, label, value, hint }: {
