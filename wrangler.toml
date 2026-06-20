@@ -31,7 +31,7 @@ RESEND_FROM = "Dinner Table Cards <onboarding@resend.dev>"
 # Zone ID is on the Cloudflare dashboard Overview page (right sidebar). Not secret.
 # The companion token is a SECRET: wrangler secret put CLOUDFLARE_ANALYTICS_TOKEN
 # (create at My Profile → API Tokens with permission "Account Analytics: Read").
-CLOUDFLARE_ZONE_ID = "REPLACE_WITH_ZONE_ID"
+CLOUDFLARE_ZONE_ID = "9a5f263a806147a332f7d3b63add80f2"
 
 # Workers AI — powers "Surprise Me" on-demand question generation (free tier)
 [ai]
