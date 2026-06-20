@@ -7,3 +7,10 @@ coverage/
 .env*
 !.env.example
 .dev.vars
+
+# Test + build artifacts
+dev-dist/
+playwright-report/
+test-results/
+tests/e2e/.auth/
+.wrangler/

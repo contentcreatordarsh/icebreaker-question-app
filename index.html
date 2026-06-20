@@ -4,13 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
+    <!-- Google AdSense — site verification + ads. Publisher ID is public. -->
+    <meta name="google-adsense-account" content="ca-pub-2390553551531836" />
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2390553551531836"
+            crossorigin="anonymous"></script>
+
     <!-- Primary -->
     <title>Dinner Table Cards — Conversation Starters for Meaningful Moments</title>
-    <meta name="description" content="Beautiful icebreaker and deep-talk question cards for dinner parties, team meetings, and meaningful conversations. Over 300 curated questions." />
+    <meta name="description" content="Free icebreaker and deep-talk questions for dinner parties, dates, and team meetings — plus a live multiplayer party game everyone joins on their phones. 600+ curated questions, no app, no sign-up." />
     <meta name="theme-color" content="#5A5A40" />
+    <!-- The app is light-only; declaring this avoids a dark-mode flash and the
+         Lighthouse "does not have a <meta name=color-scheme>" hint. -->
+    <meta name="color-scheme" content="light" />
 
     <!-- Canonical -->
     <link rel="canonical" href="https://dinnertablecards.xyz/" />
+
+    <!-- Preconnect to Firebase/Google services for faster auth & data -->
+    <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://apis.google.com" crossorigin />
 
     <!-- Favicon & PWA -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -18,22 +31,22 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="DT Cards" />
-    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
 
     <!-- Open Graph / Social sharing -->
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://dinnertablecards.xyz/" />
     <meta property="og:title" content="Dinner Table Cards — Conversation Starters" />
-    <meta property="og:description" content="Over 300 curated icebreaker and deep-talk questions for dinner parties, team meetings, and meaningful conversations." />
-    <meta property="og:image" content="https://dinnertablecards.xyz/og-image.svg" />
+    <meta property="og:description" content="600+ free icebreaker & deep-talk questions — plus a live party game everyone joins on their phones. No app, no sign-up." />
+    <meta property="og:image" content="https://dinnertablecards.xyz/og-image.png" />
 
     <!-- Twitter card -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Dinner Table Cards — Conversation Starters" />
     <meta name="twitter:description" content="Beautiful question cards for meaningful conversations. Icebreakers, deep talk, team building — curated &amp; ready." />
-    <meta name="twitter:image" content="https://dinnertablecards.xyz/og-image.svg" />
+    <meta name="twitter:image" content="https://dinnertablecards.xyz/og-image.png" />
 
-    <!-- JSON-LD structured data -->
+    <!-- JSON-LD structured data: WebApplication -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -49,19 +62,65 @@
       }
     }
     </script>
+
+    <!-- JSON-LD structured data: FAQ (enables rich snippets in Google search) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is Dinner Table Cards free?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes, completely. Every category, every topic, the AI 'Surprise Me', and the live multiplayer game — no card, ever. If you run low on questions, just share a quick bit of feedback to unlock 25 more."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How do I play with friends?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Host a free live session. Everyone joins on their phones with a 4-letter code or a QR scan, answers the same question, then you reveal the answers and vote for the best. No app and no sign-up for players."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What's the difference between Light and Deep questions?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Light questions are playful and low-stakes — great for groups still warming up. Deep questions go further: values, regrets, hopes. Both are in every category."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Do I need to download an app?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Dinner Table Cards runs in any web browser on phone or laptop, and it works offline once loaded — no internet needed mid-dinner."
+          }
+        }
+      ]
+    }
+    </script>
+    <!-- Instant branded splash shown before React mounts (replaced on hydrate).
+         Avoids a blank-screen flash for first-time visitors from social links. -->
+    <style>
+      #boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#F5F2ED;color:#1A1A1A;gap:.7rem;z-index:9999}
+      #boot .t{font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:1.7rem;animation:bp 1.6s ease-in-out infinite}
+      #boot .s{font-family:system-ui,-apple-system,sans-serif;font-size:.62rem;letter-spacing:.32em;text-transform:uppercase;opacity:.35}
+      @keyframes bp{0%,100%{opacity:.55}50%{opacity:1}}
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot" aria-hidden="true">
+        <div class="t">Dinner Table Cards</div>
+        <div class="s">setting the table&hellip;</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
-
-    <!--
-      Cloudflare Web Analytics (privacy-first, cookieless — no cookie banner needed).
-      Enable Web Analytics for this site in the Cloudflare dashboard, then replace
-      YOUR_CF_BEACON_TOKEN below with the generated token and uncomment the script.
-    -->
-    <!--
-    <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
-            data-cf-beacon='{"token": "YOUR_CF_BEACON_TOKEN"}'></script>
-    -->
+    <!-- Cloudflare Web Analytics: active via "Automatic setup" (injected at edge). -->
   </body>
 </html>

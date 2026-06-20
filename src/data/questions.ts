@@ -1,4 +1,5 @@
 import { Category, Difficulty } from '../types';
+import { TOPIC_BANK } from './topics';
 
 export type QuestionBank = Record<Category, Record<'Light' | 'Deep', string[]>>;
 // Note: QUESTION_BANK must have an entry for every Category in types.ts
@@ -581,4 +582,38 @@ export function poolSize(category: Category, difficulty: Difficulty): number {
     );
   }
   return QUESTION_BANK[category][difficulty].length;
+}
+
+/**
+ * Pick a random question from a Topic sub-pool (e.g. "sports.football").
+ * Returns a DailyQuestion-shaped object that flows through the same
+ * `overrideQuestion` path Packs use. `category` is set to a non-premium
+ * Category so the premium gate never blocks a (free) topic question.
+ */
+export function pickTopicQuestion(leafId: string, difficulty: Difficulty) {
+  const pool = TOPIC_BANK[leafId];
+  if (!pool) return pickQuestion('Icebreaker', difficulty);
+
+  const effectiveDifficulty: 'Light' | 'Deep' =
+    difficulty === 'Random'
+      ? Math.random() > 0.5 ? 'Light' : 'Deep'
+      : difficulty;
+
+  const arr = pool[effectiveDifficulty];
+  const idx = Math.floor(Math.random() * arr.length);
+
+  return {
+    date: new Date().toISOString().split('T')[0],
+    questionId: `topic-${leafId}-${effectiveDifficulty}-${idx}`,
+    text: arr[idx],
+    category: 'Icebreaker' as Category,
+  };
+}
+
+/** How many questions a topic leaf has for a given difficulty. */
+export function topicPoolSize(leafId: string, difficulty: Difficulty): number {
+  const pool = TOPIC_BANK[leafId];
+  if (!pool) return 0;
+  if (difficulty === 'Random') return pool.Light.length + pool.Deep.length;
+  return pool[difficulty].length;
 }

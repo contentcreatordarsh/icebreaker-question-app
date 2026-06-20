@@ -1,8 +1,9 @@
 import type { KeyboardEvent as ReactKeyboardEvent, ClipboardEvent as ReactClipboardEvent } from 'react';
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
-import CreateSessionButton from '../components/game/CreateSessionButton';
+import CreateSessionButton, { PENDING_HOST_KEY } from '../components/game/CreateSessionButton';
+import { useCreateSession } from '../components/game/useCreateSession';
 import { auth, signInWithGoogle } from '../lib/firebase';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import AvatarPicker, { getDefaultAvatar } from '../components/game/AvatarPicker';
@@ -17,7 +18,9 @@ const CODE_LENGTH = 4;
  */
 export default function Play() {
   const navigate = useNavigate();
-  const [user] = useAuthState(auth);
+  const [user, loadingAuth] = useAuthState(auth);
+  const { createSession, creating: resuming, error: resumeError } = useCreateSession();
+  const resumedHostRef = useRef(false);
   const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(''));
   const [name, setName] = useState('');
   const [gender, setGender] = useState<PlayerGender>('male');
@@ -27,6 +30,28 @@ export default function Play() {
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const fullCode = code.join('');
+
+  // Resume a "host a session" intent after a Google sign-in redirect. The host
+  // click happens while signed out, which triggers a full-page redirect to
+  // Google and loses in-memory state — so the intent is stashed in
+  // sessionStorage and replayed here once auth resolves on return.
+  useEffect(() => {
+    if (loadingAuth || !user || resumedHostRef.current) return;
+    let pending = false;
+    try {
+      pending = sessionStorage.getItem(PENDING_HOST_KEY) === '1';
+    } catch {
+      /* sessionStorage unavailable — nothing to resume */
+    }
+    if (!pending) return;
+    resumedHostRef.current = true;
+    try {
+      sessionStorage.removeItem(PENDING_HOST_KEY);
+    } catch {
+      /* ignore */
+    }
+    void createSession();
+  }, [user, loadingAuth, createSession]);
 
   const handleCodeInput = useCallback((index: number, value: string) => {
     const char = value.toUpperCase().replace(/[^A-Z2-9]/g, '').slice(-1);
@@ -128,15 +153,30 @@ export default function Play() {
           Host a round at your dinner party. Everyone answers the same question,
           then reveal responses one by one.
         </p>
-        <CreateSessionButton
-          variant="primary"
-          isAuthenticated={!!user}
-          onNeedAuth={signInWithGoogle}
-        >
-          Host a New Session
-        </CreateSessionButton>
+        {loadingAuth ? (
+          // Auth still resolving — show a disabled button so an early click can't
+          // mis-fire into a sign-in redirect for a user who is actually signed in.
+          <div className="rounded-full bg-[#5A5A40] px-6 py-3 text-xs uppercase tracking-[0.3em] text-[#F5F2ED] shadow-md opacity-50">
+            Host a New Session
+          </div>
+        ) : resuming ? (
+          <div className="rounded-full bg-[#5A5A40] px-6 py-3 text-xs uppercase tracking-[0.3em] text-[#F5F2ED] shadow-md opacity-80">
+            Creating your session…
+          </div>
+        ) : (
+          <CreateSessionButton
+            variant="primary"
+            isAuthenticated={!!user}
+            onNeedAuth={signInWithGoogle}
+          >
+            Host a New Session
+          </CreateSessionButton>
+        )}
+        {resumeError && (
+          <p className="mt-2 text-center text-xs text-red-600">{resumeError}</p>
+        )}
         <p className="mt-3 text-[10px] uppercase tracking-wider text-[#1A1A1A]/30">
-          {user ? '1 free session per week · Unlimited with Premium' : 'Sign in to host'}
+          {loadingAuth ? ' ' : user ? 'Host up to 10 live sessions per week — free' : 'Sign in to host'}
         </p>
       </section>
 

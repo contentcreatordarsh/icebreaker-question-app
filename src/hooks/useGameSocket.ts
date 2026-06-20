@@ -226,7 +226,7 @@ interface UseGameSocketReturn {
   error: string | null;
   actions: {
     submitAnswer: (answer: string) => void;
-    startQuestion: (text: string, timerSec?: number) => void;
+    startQuestion: (text: string, timerSec?: number, category?: string) => void;
     revealNext: () => void;
     revealAll: () => void;
     nextQuestion: () => void;
@@ -254,7 +254,13 @@ export function useGameSocket({
 
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
+  const cleanupListenersRef = useRef<(() => void) | null>(null);
   const maxRetries = 3;
+
+  // Latest game status, readable from long-lived listeners (e.g. the
+  // visibilitychange reconnect) without re-running the connect effect.
+  const statusRef = useRef(state.game.status);
+  statusRef.current = state.game.status;
 
   // Send a typed message over the WebSocket
   const sendMessage = useCallback((msg: GameClientMessage) => {
@@ -281,7 +287,7 @@ export function useGameSocket({
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
-      ws.addEventListener('open', () => {
+      const onOpen = () => {
         if (cancelled) { ws.close(); return; }
         dispatch({ type: 'SET_CONNECTION', status: 'connected' });
         retriesRef.current = 0;
@@ -292,9 +298,9 @@ export function useGameSocket({
         if (gender) (joinMsg as any).gender = gender;
         if (avatar) (joinMsg as any).avatar = avatar;
         ws.send(JSON.stringify(joinMsg));
-      });
+      };
 
-      ws.addEventListener('message', (event) => {
+      const onMessage = (event: MessageEvent) => {
         if (cancelled) return;
         try {
           const msg = JSON.parse(event.data as string) as GameServerMessage;
@@ -305,9 +311,9 @@ export function useGameSocket({
         } catch {
           console.warn('[useGameSocket] Failed to parse message:', event.data);
         }
-      });
+      };
 
-      ws.addEventListener('close', (event) => {
+      const onClose = (event: CloseEvent) => {
         if (cancelled) return;
         wsRef.current = null;
 
@@ -327,18 +333,50 @@ export function useGameSocket({
           dispatch({ type: 'SET_CONNECTION', status: 'error' });
           dispatch({ type: 'SET_ERROR', message: 'Connection lost. Please refresh to rejoin.' });
         }
-      });
+      };
 
-      ws.addEventListener('error', () => {
+      const onError = () => {
         // The close event will fire after this, triggering reconnect logic
-      });
+      };
+
+      ws.addEventListener('open', onOpen);
+      ws.addEventListener('message', onMessage);
+      ws.addEventListener('close', onClose);
+      ws.addEventListener('error', onError);
+
+      // Store cleanup for this WebSocket instance
+      cleanupListenersRef.current = () => {
+        ws.removeEventListener('open', onOpen);
+        ws.removeEventListener('message', onMessage);
+        ws.removeEventListener('close', onClose);
+        ws.removeEventListener('error', onError);
+      };
     }
 
     connect();
 
+    // Phones drop the socket when locked/backgrounded, and the capped retries
+    // can exhaust before the player returns — leaving a dead "please refresh"
+    // screen. When the tab becomes visible again, reset the budget and
+    // reconnect immediately (the join flow restores identity server-side).
+    const onVisible = () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      // Never reconnect into a finished session — it would replace the recap
+      // screen with a join error.
+      if (statusRef.current === 'ended') return;
+      const ws = wsRef.current;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      retriesRef.current = 0;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      connect();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (cleanupListenersRef.current) cleanupListenersRef.current();
       const ws = wsRef.current;
       if (ws) {
         ws.close(1000, 'Component unmounted');
@@ -363,8 +401,8 @@ export function useGameSocket({
       });
     }, [sendMessage, state.game.playerId, state.game.players.length, state.game.answeredPlayerIds.size]),
 
-    startQuestion: useCallback((text: string, timerSec?: number) => {
-      sendMessage({ type: 'start_question', text, timerSec });
+    startQuestion: useCallback((text: string, timerSec?: number, category?: string) => {
+      sendMessage({ type: 'start_question', text, timerSec, category });
     }, [sendMessage]),
 
     revealNext: useCallback(() => {

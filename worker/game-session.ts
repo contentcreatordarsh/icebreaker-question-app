@@ -43,7 +43,8 @@ interface SessionState {
 }
 
 interface WsAttachment {
-  playerId: string;
+  playerId?: string;
+  country?: string; // ISO 3166-1 alpha-2, captured from Cloudflare edge at upgrade
 }
 
 // ── Client → Server messages ───────────────────────────────────────────────────
@@ -91,6 +92,10 @@ const MAX_ANSWER_LENGTH = 500;
 const MAX_NAME_LENGTH = 30;
 const MAX_QUESTION_LENGTH = 500;
 
+// Note: user text (names, questions, answers) is rendered exclusively through
+// React text nodes on the client, which auto-escape — so we intentionally do NOT
+// HTML-entity-encode it here (doing so caused apostrophes to render as "&#39;").
+
 // ── Durable Object ─────────────────────────────────────────────────────────────
 
 interface DOEnv {
@@ -101,6 +106,8 @@ export class GameSession implements DurableObject {
   private state: DurableObjectState;
   private env: DOEnv;
   private gameState: SessionState;
+  /** Per-connection message timestamps for rate limiting (resets on DO hibernation). */
+  private messageTimes: WeakMap<WebSocket, number[]> = new WeakMap();
 
   constructor(state: DurableObjectState, env: unknown) {
     this.env = env as DOEnv;
@@ -137,19 +144,30 @@ export class GameSession implements DurableObject {
   // After hibernation wake, this.state.getWebSockets() returns live connections
   // and ws.deserializeAttachment() returns the stored playerId.
 
-  /** Get the playerId for a WebSocket (from its attachment). */
-  private getPlayerId(ws: WebSocket): string | null {
+  /** Read the full attachment (playerId + country) for a WebSocket. */
+  private getAttachment(ws: WebSocket): WsAttachment | null {
     try {
-      const att = (ws as unknown as { deserializeAttachment(): WsAttachment | null }).deserializeAttachment();
-      return att?.playerId ?? null;
+      return (ws as unknown as { deserializeAttachment(): WsAttachment | null }).deserializeAttachment();
     } catch {
       return null;
     }
   }
 
-  /** Store the playerId on a WebSocket (survives hibernation). */
+  /** Get the playerId for a WebSocket (from its attachment). */
+  private getPlayerId(ws: WebSocket): string | null {
+    return this.getAttachment(ws)?.playerId ?? null;
+  }
+
+  /** Store the country on a WebSocket at upgrade time (before a player joins). */
+  private setCountry(ws: WebSocket, country: string): void {
+    const att = this.getAttachment(ws) ?? {};
+    (ws as unknown as { serializeAttachment(att: WsAttachment): void }).serializeAttachment({ ...att, country });
+  }
+
+  /** Store the playerId on a WebSocket (survives hibernation), preserving country. */
   private setPlayerId(ws: WebSocket, playerId: string): void {
-    (ws as unknown as { serializeAttachment(att: WsAttachment): void }).serializeAttachment({ playerId });
+    const att = this.getAttachment(ws) ?? {};
+    (ws as unknown as { serializeAttachment(att: WsAttachment): void }).serializeAttachment({ ...att, playerId });
   }
 
   /** Get the WebSocket for a given playerId (searches all live connections). */
@@ -217,6 +235,11 @@ export class GameSession implements DurableObject {
     // Accept with hibernation API
     this.state.acceptWebSocket(server);
 
+    // Stash the country (passed by the Worker from Cloudflare edge geo) on the
+    // socket so handleJoin can count it per real player join.
+    const country = (url.searchParams.get('c') || '').toUpperCase();
+    if (/^[A-Z]{2}$/.test(country)) this.setCountry(server, country);
+
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -224,6 +247,25 @@ export class GameSession implements DurableObject {
 
   async webSocketMessage(ws: WebSocket, rawMessage: string | ArrayBuffer): Promise<void> {
     const text = typeof rawMessage === 'string' ? rawMessage : new TextDecoder().decode(rawMessage);
+
+    // Reject oversized messages (DoS protection)
+    if (text.length > 10_000) {
+      this.send(ws, { type: 'error', message: 'Message too large' });
+      return;
+    }
+
+    // Per-connection message rate limiting: max 20 messages per 5 seconds
+    const now = Date.now();
+    const times = this.messageTimes.get(ws) ?? [];
+    const windowStart = now - 5000;
+    const recentTimes = times.filter(t => t > windowStart);
+    if (recentTimes.length >= 20) {
+      this.send(ws, { type: 'error', message: 'Rate limited — slow down' });
+      try { ws.close(1008, 'Rate limited'); } catch { /* already closed */ }
+      return;
+    }
+    recentTimes.push(now);
+    this.messageTimes.set(ws, recentTimes);
 
     let msg: ClientMessage;
     try {
@@ -338,7 +380,9 @@ export class GameSession implements DurableObject {
 
     const isHost = msg.hostToken === this.gameState.hostToken && !!msg.hostToken;
     const gender = msg.gender || undefined;
-    const avatar = msg.avatar || undefined;
+    // Validate avatar is a short emoji string, not arbitrary content
+    const rawAvatar = (msg.avatar || '').slice(0, 10);
+    const avatar = rawAvatar || undefined;
 
     // Check if host is reconnecting
     if (isHost) {
@@ -397,12 +441,17 @@ export class GameSession implements DurableObject {
     if (!isHost) {
       this.incrementStat('stats:players_total');
       this.incrementStat(`daily:players:${new Date().toISOString().slice(0, 10)}`);
+      // Count where this player joined from (Cloudflare edge geo, stashed at upgrade).
+      const country = this.getAttachment(ws)?.country;
+      if (country && /^[A-Z]{2}$/.test(country)) {
+        this.incrementStat(`stats:country:${country}`);
+      }
     }
 
     await this.persist();
   }
 
-  private async handleStartQuestion(playerId: string, msg: { type: 'start_question'; text: string; timerSec?: number }): Promise<void> {
+  private async handleStartQuestion(playerId: string, msg: { type: 'start_question'; text: string; timerSec?: number; category?: string }): Promise<void> {
     if (!this.isHost(playerId)) {
       this.sendError(playerId, 'Only the host can start a question');
       return;
@@ -443,6 +492,13 @@ export class GameSession implements DurableObject {
     this.incrementStat('stats:questions_total');
     this.incrementStat(`daily:questions:${new Date().toISOString().slice(0, 10)}`);
 
+    // Per-category popularity — a prompt-tuning signal for the admin dashboard.
+    // Sanitise to a short, safe key segment; ignore anything unexpected.
+    const cat = (msg.category || '').trim().slice(0, 40);
+    if (cat && /^[\w &'-]+$/.test(cat)) {
+      this.incrementStat(`stats:category:${cat}`);
+    }
+
     // Set alarm for timer expiration
     await this.state.storage.setAlarm(new Date(timerEndsAt).getTime());
     await this.persist();
@@ -456,6 +512,12 @@ export class GameSession implements DurableObject {
 
     if (!this.gameState.players[playerId]) {
       this.sendError(playerId, 'You are not in this session');
+      return;
+    }
+
+    // Reject duplicate submissions — players can only answer once per question
+    if (this.gameState.answers[playerId]) {
+      this.sendError(playerId, 'You already submitted an answer');
       return;
     }
 
@@ -600,6 +662,27 @@ export class GameSession implements DurableObject {
     this.broadcast({ type: 'session_ended' });
     await this.persist();
 
+    // Record real play duration for "avg playing time" — only for sessions that
+    // were actually played (>=1 question) and explicitly ended, within sane bounds
+    // (so abandoned/auto-expired rooms don't inflate the average).
+    // AWAITED: a fire-and-forget KV write here would be cancelled as the DO goes
+    // idle right after End Session closes all sockets.
+    if (this.env.APP_KV && this.gameState.questionCount > 0) {
+      const secs = Math.round((Date.now() - new Date(this.gameState.createdAt).getTime()) / 1000);
+      if (secs >= 20 && secs <= 6 * 3600) {
+        try {
+          const [curS, curC] = await Promise.all([
+            this.env.APP_KV.get('stats:play_seconds_total'),
+            this.env.APP_KV.get('stats:play_count'),
+          ]);
+          await Promise.all([
+            this.env.APP_KV.put('stats:play_seconds_total', String(parseInt(curS ?? '0', 10) + secs)),
+            this.env.APP_KV.put('stats:play_count', String(parseInt(curC ?? '0', 10) + 1)),
+          ]);
+        } catch { /* non-critical */ }
+      }
+    }
+
     // Store session summary in KV for history endpoint
     if (this.env.APP_KV) {
       const playerCount = Object.keys(this.gameState.players).length;
@@ -644,6 +727,12 @@ export class GameSession implements DurableObject {
     // Remove from state
     delete this.gameState.players[targetId];
     delete this.gameState.answers[targetId];
+
+    // Clean up votes: remove votes BY the kicked player and votes FOR them
+    delete this.gameState.votes[targetId];
+    for (const [voterId, voteTarget] of Object.entries(this.gameState.votes)) {
+      if (voteTarget === targetId) delete this.gameState.votes[voterId];
+    }
 
     // Notify remaining players
     this.broadcast({
@@ -691,7 +780,8 @@ export class GameSession implements DurableObject {
       return;
     }
 
-    if (!this.gameState.answers[msg.targetPlayerId]) {
+    // Validate target is a real player with an answer
+    if (!this.gameState.players[msg.targetPlayerId] || !this.gameState.answers[msg.targetPlayerId]) {
       this.sendError(playerId, 'Invalid vote target');
       return;
     }
@@ -885,10 +975,15 @@ export class GameSession implements DurableObject {
 
   /** Increment a KV stat counter (fire-and-forget). */
   private incrementStat(key: string): void {
+    this.addStat(key, 1);
+  }
+
+  /** Add an arbitrary amount to a KV stat counter (fire-and-forget). */
+  private addStat(key: string, amount: number): void {
     if (!this.env.APP_KV) return;
     this.env.APP_KV.get(key).then(val => {
       const current = parseInt(val ?? '0', 10);
-      this.env.APP_KV!.put(key, String(current + 1));
+      this.env.APP_KV!.put(key, String(current + amount));
     }).catch(() => { /* non-critical */ });
   }
 

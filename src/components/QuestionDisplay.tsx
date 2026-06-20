@@ -3,34 +3,30 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Share2, Heart, CheckCircle2,
   Twitter, Facebook, Linkedin, Instagram, Music,
-  Copy, Check, Zap, Shuffle, Sparkles, Lock,
+  Copy, Check, Zap, Shuffle, Sparkles, MessageCircle, Send,
 } from 'lucide-react';
-import { db, auth, authedFetch } from '../lib/firebase';
+import { getDb, auth, authedFetch } from '../lib/firebase';
 import { doc, getDoc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { pickQuestion, poolSize } from '../data/questions';
 import { generateUniqueQuestion, getCategoryGradient, getCategoryAccent } from '../services/questionService';
-import { Category, DailyQuestion, OperationType, Difficulty, UserProfile, PREMIUM_CATEGORIES } from '../types';
+import { Category, DailyQuestion, OperationType, Difficulty, UserProfile } from '../types';
 import { PLANS } from '../constants';
 import { cn } from '../lib/utils';
 import { handleFirestoreError } from '../lib/firestoreUtils';
 
 interface QuestionDisplayProps {
-  isPremium: boolean;
   category: Category;
   difficulty: Difficulty;
   userProfile: UserProfile | null;
-  onUpgrade: () => void;
   shuffleKey?: number;
   overrideQuestion?: DailyQuestion | null;
   onUsageIncremented?: (newCount?: number) => void;
 }
 
 export default function QuestionDisplay({
-  isPremium,
   category,
   difficulty,
   userProfile,
-  onUpgrade,
   shuffleKey = 0,
   overrideQuestion = null,
   onUsageIncremented,
@@ -43,15 +39,55 @@ export default function QuestionDisplay({
   const [showShareCard, setShowShareCard] = useState(false);
   const [surpriseLoading, setSurpriseLoading] = useState(false);
   const [surpriseError, setSurpriseError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   // Guard: prevent the consumption loop caused by usageCount changing after /api/consume
   // fires onUsageIncremented, which refreshes the profile, which would re-run the effect.
   const consumedRef = useRef(false);
+
+  // Feedback-to-unlock (at the usage limit): share feedback → get free questions.
+  const [feedbackText, setFeedbackText] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
+  const [unlockMsg, setUnlockMsg] = useState<string | null>(null);
+
+  const handleFeedbackUnlock = useCallback(async () => {
+    const text = feedbackText.trim();
+    if (text.length < 3) {
+      setUnlockMsg('Please share a little more.');
+      return;
+    }
+    setUnlocking(true);
+    setUnlockMsg(null);
+    try {
+      const res = await authedFetch('/api/feedback-unlock', { text });
+      const data = (await res.json()) as { ok?: boolean; granted?: number; onCooldown?: boolean; error?: string };
+      if (res.ok && data.ok) {
+        if (data.granted && data.granted > 0) {
+          // Success — clear the box and refresh the profile, which lifts the wall
+          // and drops the user straight onto their next question (no scrolling).
+          setUnlockMsg('✓ Unlocked! Loading your next question…');
+          setFeedbackText('');
+          onUsageIncremented?.();
+        } else if (data.onCooldown) {
+          setUnlockMsg('Just a moment — try again in a few seconds.');
+        } else {
+          setUnlockMsg('Thanks for the feedback!');
+        }
+      } else {
+        setUnlockMsg(data.error || 'Could not submit — please try again.');
+      }
+    } catch {
+      setUnlockMsg('Could not submit — please try again.');
+    } finally {
+      setUnlocking(false);
+    }
+  }, [feedbackText, onUsageIncremented]);
 
   const gradient = getCategoryGradient(category);
   const accent = getCategoryAccent(category);
 
   const loadInteractionState = useCallback(async (q: DailyQuestion) => {
     if (!auth.currentUser) return;
+    const db = await getDb();
     const favRef  = doc(db, 'users', auth.currentUser.uid, 'favorites', q.questionId);
     const histRef = doc(db, 'users', auth.currentUser.uid, 'history',   q.questionId);
     const [favSnap, histSnap] = await Promise.all([getDoc(favRef), getDoc(histRef)]);
@@ -88,6 +124,7 @@ export default function QuestionDisplay({
   useEffect(() => {
     if (!overrideQuestion) return;
     setDailyQuestion(overrideQuestion);
+    setLoading(false); // clear the mount loading state (daily effect early-returns when overridden)
     setIsFavorited(false);
     setIsDiscussed(false);
     if (!auth.currentUser) return;
@@ -125,6 +162,7 @@ export default function QuestionDisplay({
 
       setLoading(true);
       const today  = new Date().toISOString().split('T')[0];
+      const db = await getDb();
       const docRef = doc(db, 'daily_questions', `${today}_${category}_${difficulty}`);
 
       try {
@@ -176,12 +214,8 @@ export default function QuestionDisplay({
     }
   }, [category, difficulty, loadInteractionState, consumeAndTick]);
 
-  // Surprise me: Workers AI — premium only. Gate free users to the upgrade modal.
+  // Surprise me: a fresh Workers AI question — free for everyone (counts toward usage).
   const handleSurprise = useCallback(async () => {
-    if (!isPremium) {
-      onUpgrade();
-      return;
-    }
     setSurpriseLoading(true);
     setSurpriseError(null);
     setIsFavorited(false);
@@ -200,44 +234,61 @@ export default function QuestionDisplay({
     } finally {
       setSurpriseLoading(false);
     }
-  }, [category, difficulty, loadInteractionState, isPremium, onUpgrade]);
+  }, [category, difficulty, loadInteractionState]);
 
   const APP_URL = 'https://dinnertablecards.xyz';
 
-  const handleShare = () => {
-    if (dailyQuestion) {
-      navigator.share?.({
-        title: 'Dinner Table Cards',
-        text: `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`,
-        url: APP_URL,
-      }).catch(() => {});
+  // Per-question share URL. Its server-rendered Open Graph title IS the question,
+  // so Facebook/LinkedIn/iMessage/Slack previews (which ignore pre-filled text)
+  // finally show the question instead of the generic site description.
+  const questionShareUrl = () => {
+    if (!dailyQuestion) return APP_URL;
+    const params = new URLSearchParams({ t: dailyQuestion.text });
+    if (dailyQuestion.category) params.set('c', dailyQuestion.category);
+    return `${APP_URL}/q?${params.toString()}`;
+  };
+
+  const shareMessage = () =>
+    dailyQuestion ? `"${dailyQuestion.text}"\n\nGet your free question at Dinner Table Cards 🃏` : '';
+
+  // Native share sheet — the only way to reach Instagram/Stories and the best
+  // path on mobile (full text + URL to ANY installed app). Falls back to copy.
+  const handleShare = async () => {
+    if (!dailyQuestion) return;
+    const data = { title: 'Dinner Table Cards', text: shareMessage(), url: questionShareUrl() };
+    if (navigator.share) {
+      try { await navigator.share(data); return; } catch { /* cancelled — fall through */ }
     }
+    copyToClipboard();
   };
 
   const copyToClipboard = () => {
     if (dailyQuestion) {
-      navigator.clipboard.writeText(
-        `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`
-      );
+      navigator.clipboard.writeText(`${shareMessage()}\n${questionShareUrl()}`);
       setCopyFeedback(true);
       setTimeout(() => setCopyFeedback(false), 2000);
     }
   };
 
   const getShareUrls = () => {
-    if (!dailyQuestion) return { twitter: '', facebook: '', linkedin: '' };
-    const shareText = `"${dailyQuestion.text}"\n\nGet your free question at dinnertablecards.xyz 🃏`;
-    const text = encodeURIComponent(shareText);
-    const url  = encodeURIComponent(APP_URL);
+    if (!dailyQuestion) return { twitter: '', facebook: '', linkedin: '', whatsapp: '', telegram: '' };
+    const text = encodeURIComponent(shareMessage());
+    const url = encodeURIComponent(questionShareUrl());
     return {
-      twitter:  `https://twitter.com/intent/tweet?text=${text}&url=${url}`,
+      // X reads the text param, so the question shows in the post itself.
+      twitter:  `https://x.com/intent/post?text=${text}&url=${url}`,
+      // FB/LinkedIn ignore text — they build the preview from /q's OG tags.
       facebook: `https://www.facebook.com/sharer/sharer.php?u=${url}`,
       linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${url}`,
+      // WhatsApp & Telegram accept full text + URL.
+      whatsapp: `https://wa.me/?text=${encodeURIComponent(`${shareMessage()}\n${questionShareUrl()}`)}`,
+      telegram: `https://t.me/share/url?url=${url}&text=${text}`,
     };
   };
 
   const toggleFavorite = async () => {
     if (!auth.currentUser || !dailyQuestion) return;
+    const db = await getDb();
     const favRef = doc(db, 'users', auth.currentUser.uid, 'favorites', dailyQuestion.questionId);
     try {
       if (isFavorited) {
@@ -249,17 +300,22 @@ export default function QuestionDisplay({
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `users/${auth.currentUser.uid}/favorites/${dailyQuestion.questionId}`);
+      setActionError('Could not save favorite. Please try again.');
+      setTimeout(() => setActionError(null), 4000);
     }
   };
 
   const markDiscussed = async () => {
     if (!auth.currentUser || !dailyQuestion || isDiscussed) return;
+    const db = await getDb();
     const histRef = doc(db, 'users', auth.currentUser.uid, 'history', dailyQuestion.questionId);
     try {
       await setDoc(histRef, { ...dailyQuestion, discussedAt: serverTimestamp() });
       setIsDiscussed(true);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `users/${auth.currentUser.uid}/history/${dailyQuestion.questionId}`);
+      setActionError('Could not mark as discussed. Please try again.');
+      setTimeout(() => setActionError(null), 4000);
     }
   };
 
@@ -288,30 +344,35 @@ export default function QuestionDisplay({
           animate={{ opacity: 1, scale: 1 }}
           className="absolute inset-0 flex flex-col items-center justify-center"
         >
-          <div className="bg-paper/90 backdrop-blur-md border border-brand/20 rounded-sm px-10 py-10 max-w-sm text-center shadow-2xl">
+          <div className="bg-paper/95 backdrop-blur-md border border-brand/20 rounded-sm px-8 py-9 max-w-sm w-full text-center shadow-2xl">
             <Sparkles className="mx-auto mb-4 text-accent" size={24} />
-            <h2 className="font-serif text-2xl italic text-brand mb-3">Unlock the Complete Archive</h2>
-            <p className="font-serif italic text-brand/60 mb-6 text-sm leading-relaxed">
-              You've explored your free questions. Upgrade to keep the conversation going — over 3,000 more await.
+            <h2 className="font-serif text-2xl italic text-brand mb-2">Keep the conversation going</h2>
+            <p className="font-serif italic text-brand/60 mb-5 text-sm leading-relaxed">
+              Share one quick thought and we&rsquo;ll unlock <strong className="text-brand/80">25 more questions</strong> — free. Every time.
             </p>
-            <button
-              onClick={onUpgrade}
-              className="caps-tracking bg-brand text-white px-8 py-3 w-full hover:bg-opacity-90 transition-all text-[11px] mb-3"
-            >
-              Unlock the Archive
-            </button>
-            <p className="text-[9px] caps-tracking opacity-30">From $2/month · Cancel anytime</p>
-            <div className="mt-4 pt-4 border-t border-brand/10">
-              <p className="text-[9px] caps-tracking opacity-40 text-center">
-                Or invite a friend —{' '}
-                <button
-                  onClick={onUpgrade}
-                  className="underline hover:opacity-60 transition-opacity"
-                >
-                  earn 50 free questions
-                </button>
-                {' '}via your profile
-              </p>
+            <div className="text-left">
+              <textarea
+                id="unlock-feedback"
+                value={feedbackText}
+                onChange={(e) => { setFeedbackText(e.target.value); setUnlockMsg(null); }}
+                onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); handleFeedbackUnlock(); } }}
+                maxLength={1000}
+                rows={3}
+                autoFocus
+                placeholder="One thing you loved, or one thing we should add…"
+                className="w-full border border-brand/20 rounded-sm px-3 py-2 text-sm text-brand bg-white/70 outline-none focus:border-brand/50 resize-none mb-2"
+              />
+              {unlockMsg && (
+                <p className={cn('text-[11px] mb-2', unlockMsg.startsWith('✓') ? 'text-accent' : 'text-red-600')}>{unlockMsg}</p>
+              )}
+              <button
+                onClick={handleFeedbackUnlock}
+                disabled={unlocking || feedbackText.trim().length < 3}
+                className="caps-tracking bg-brand text-white px-6 py-3 w-full hover:bg-opacity-90 transition-all text-[11px] disabled:opacity-40"
+              >
+                {unlocking ? 'Unlocking…' : 'Share & unlock 25 free'}
+              </button>
+              <p className="mt-3 text-[9px] caps-tracking opacity-30">No payment, ever. Your feedback shapes what we build next.</p>
             </div>
           </div>
         </motion.div>
@@ -319,44 +380,7 @@ export default function QuestionDisplay({
     );
   }
 
-  // ── Premium category gate ─────────────────────────────────────────────────
-  const isPremiumCategory = (PREMIUM_CATEGORIES as readonly string[]).includes(category);
-  if (isPremiumCategory && !isPremium) {
-    const preview = pickQuestion('Deep Talk', difficulty);
-    return (
-      <div className="relative w-full max-w-4xl mx-auto text-center px-4 py-12 min-h-[400px]">
-        {/* Blurred free question as backdrop */}
-        <div className="select-none pointer-events-none" style={{ filter: 'blur(12px)', opacity: 0.3 }}>
-          <span className="caps-tracking opacity-40 mb-12 block">The Daily Provocation</span>
-          <h2 className="font-serif text-5xl md:text-7xl leading-[1.1] text-brand mb-10 tracking-tighter">
-            {preview.text}
-          </h2>
-        </div>
-        {/* Upgrade overlay */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="absolute inset-0 flex flex-col items-center justify-center px-4"
-        >
-          <div className="bg-paper/95 backdrop-blur-md border border-brand/20 rounded-sm px-10 py-10 max-w-sm text-center shadow-2xl">
-            <Sparkles className="mx-auto mb-4 text-accent" size={22} />
-            <p className="text-[9px] caps-tracking opacity-40 mb-2">{category}</p>
-            <h2 className="font-serif text-2xl italic text-brand mb-3">Premium Category</h2>
-            <p className="font-serif italic text-brand/60 mb-6 text-sm leading-relaxed">
-              Unlock {category} along with Philosophy, Creative Sparks, and the full archive.
-            </p>
-            <button
-              onClick={onUpgrade}
-              className="caps-tracking bg-brand text-white px-8 py-3 w-full hover:bg-opacity-90 transition-all text-[11px] mb-3"
-            >
-              Unlock from $2/month
-            </button>
-            <p className="text-[9px] caps-tracking opacity-30">Cancel anytime · No commitment</p>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
+  // Every category is free — there is no paid tier. (Premium gating removed.)
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (loading) {
@@ -382,17 +406,11 @@ export default function QuestionDisplay({
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-6 mx-auto max-w-lg bg-accent/10 border border-accent/20 rounded-sm px-6 py-3 flex items-center justify-between gap-4"
+          className="mb-6 mx-auto max-w-lg bg-accent/10 border border-accent/20 rounded-sm px-6 py-3 text-center"
         >
           <p className="caps-tracking text-[10px] text-accent">
-            {effectiveLimit - userProfile!.usageCount} question{effectiveLimit - userProfile!.usageCount !== 1 ? 's' : ''} remaining on your free plan
+            {effectiveLimit - userProfile!.usageCount} question{effectiveLimit - userProfile!.usageCount !== 1 ? 's' : ''} left · share feedback any time to add 25 more — free
           </p>
-          <button
-            onClick={onUpgrade}
-            className="caps-tracking text-[9px] border border-accent/30 bg-accent/5 px-3 py-1.5 text-accent hover:bg-accent/20 transition-colors whitespace-nowrap"
-          >
-            Unlock more
-          </button>
         </motion.div>
       )}
       <AnimatePresence mode="wait">
@@ -401,7 +419,7 @@ export default function QuestionDisplay({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="relative py-12"
+          className="relative py-12 md:py-16 px-6 md:px-10 rounded-lg bg-white/30 border border-brand/[0.07] shadow-[0_1px_30px_-12px_rgba(26,26,26,0.15)]"
         >
           <span className="caps-tracking opacity-40 mb-12 block">The Daily Provocation</span>
 
@@ -455,6 +473,13 @@ export default function QuestionDisplay({
               <p className="text-[10px] caps-tracking opacity-30">Sign in to save progress</p>
             )}
 
+            {/* Action error toast — favorite/discuss failures */}
+            {actionError && (
+              <p className="text-[10px] caps-tracking text-red-600/80 max-w-xs text-center">
+                {actionError}
+              </p>
+            )}
+
             {/* Surprise Me error — rate limit or generation failure */}
             {surpriseError && (
               <p className="text-[10px] caps-tracking text-red-600/80 max-w-xs text-center">
@@ -476,7 +501,7 @@ export default function QuestionDisplay({
                 onClick={handleSurprise}
                 disabled={surpriseLoading}
                 className="caps-tracking border border-brand/10 px-5 py-2.5 opacity-50 hover:opacity-100 hover:border-brand/30 transition-all flex items-center gap-2 text-[10px] disabled:opacity-30"
-                title={isPremium ? 'Generate a unique question via Cloudflare Workers AI' : 'Premium feature — upgrade to unlock'}
+                title="Generate a unique question via Cloudflare Workers AI"
               >
                 {surpriseLoading ? (
                   <>
@@ -487,19 +512,32 @@ export default function QuestionDisplay({
                     />
                     Generating…
                   </>
-                ) : isPremium ? (
-                  <><Sparkles size={12} /> Surprise Me</>
                 ) : (
-                  <><Lock size={12} /> Surprise Me</>
+                  <><Sparkles size={12} /> Surprise Me</>
                 )}
               </button>
             </div>
 
             {/* Social sharing */}
-            <div className="flex items-center gap-6 mt-8">
-              <div className="flex gap-6 opacity-40 hover:opacity-100 transition-opacity">
-                <a href={shareUrls.twitter} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on Twitter">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3 mt-8">
+              {/* Native share sheet — primary path (mobile reaches Instagram, WhatsApp, anything) */}
+              <button
+                onClick={handleShare}
+                className="flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[10px] caps-tracking text-paper transition-all hover:bg-brand/90 active:scale-[0.98]"
+                title="Share"
+              >
+                <Share2 size={13} /> Share
+              </button>
+
+              <div className="flex items-center gap-5 opacity-40 hover:opacity-100 transition-opacity">
+                <a href={shareUrls.twitter} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on X">
                   <Twitter size={18} />
+                </a>
+                <a href={shareUrls.whatsapp} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on WhatsApp">
+                  <MessageCircle size={18} />
+                </a>
+                <a href={shareUrls.telegram} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on Telegram">
+                  <Send size={18} />
                 </a>
                 <a href={shareUrls.facebook} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on Facebook">
                   <Facebook size={18} />
@@ -507,10 +545,10 @@ export default function QuestionDisplay({
                 <a href={shareUrls.linkedin} target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors" title="Share on LinkedIn">
                   <Linkedin size={18} />
                 </a>
-                <button onClick={copyToClipboard} className="hover:text-accent transition-colors" title="Copy for Instagram">
+                <button onClick={handleShare} className="hover:text-accent transition-colors" title="Share to Instagram (opens share sheet)">
                   <Instagram size={18} />
                 </button>
-                <button onClick={copyToClipboard} className="hover:text-accent transition-colors" title="Copy for TikTok">
+                <button onClick={handleShare} className="hover:text-accent transition-colors" title="Share to TikTok (opens share sheet)">
                   <Music size={18} />
                 </button>
               </div>

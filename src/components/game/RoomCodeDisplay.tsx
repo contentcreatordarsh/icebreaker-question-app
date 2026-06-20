@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { cn } from '../../lib/utils';
 
 interface RoomCodeDisplayProps {
@@ -59,6 +60,12 @@ export default function RoomCodeDisplay({ roomCode, className }: RoomCodeDisplay
             {char}
           </span>
         ))}
+      </div>
+
+      {/* Scan-to-join QR code */}
+      <div className="flex flex-col items-center gap-2 rounded-xl border border-[#1A1A1A]/10 bg-white p-4 shadow-sm">
+        <QRCodeSVG value={joinUrl} size={132} bgColor="#FFFFFF" fgColor="#1A1A1A" level="M" />
+        <span className="text-[10px] uppercase tracking-[0.3em] text-[#1A1A1A]/40">Scan to join</span>
       </div>
 
       {/* Join URL */}

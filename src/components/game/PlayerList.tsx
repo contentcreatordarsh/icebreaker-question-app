@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { GamePlayer } from '../../types';
 import { cn } from '../../lib/utils';
 
@@ -41,7 +42,7 @@ function getColorClass(name: string): string {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-export default function PlayerList({
+const PlayerList = memo(function PlayerList({
   players,
   answeredPlayerIds,
   currentPlayerId,
@@ -121,6 +122,7 @@ export default function PlayerList({
                 onClick={() => onKick(player.id)}
                 className="ml-1 hidden rounded-full p-0.5 text-red-400 hover:bg-red-100 hover:text-red-600 group-hover:inline-flex"
                 title={`Remove ${player.name}`}
+                aria-label={`Remove ${player.name} from session`}
               >
                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -132,4 +134,19 @@ export default function PlayerList({
       })}
     </div>
   );
-}
+}, (prev, next) => {
+  // Custom comparator: compare Set sizes and contents since Set creates new refs each render
+  if (prev.players !== next.players) return false;
+  if (prev.currentPlayerId !== next.currentPlayerId) return false;
+  if (prev.onKick !== next.onKick) return false;
+  if (prev.isHost !== next.isHost) return false;
+  if (prev.compact !== next.compact) return false;
+  if (prev.className !== next.className) return false;
+  // Compare Sets by size (cheap check — covers the common case of new answers arriving)
+  const prevSize = prev.answeredPlayerIds?.size ?? 0;
+  const nextSize = next.answeredPlayerIds?.size ?? 0;
+  if (prevSize !== nextSize) return false;
+  return true;
+});
+
+export default PlayerList;

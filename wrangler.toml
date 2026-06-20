@@ -7,14 +7,23 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./dist"
 not_found_handling = "single-page-application"
 binding = "ASSETS"
+# Run the Worker first for EVERY request. This is required for correctness, not
+# just the security headers: the Worker owns the API (/api/*) and the Firebase auth
+# endpoints (/__/auth/* proxy + /__/firebase/init.json). With an allow-list array
+# here, Cloudflare served every *other* path assets-first, so those non-asset paths
+# fell through to the SPA (single-page-application) fallback and returned index.html
+# instead of reaching the Worker — which 404'd Google sign-in and made /api/* return
+# HTML. Running the Worker first restores that routing AND lets addSecurityHeaders()
+# wrap the root document (which assets-first served without CSP/HSTS). The Worker
+# falls through to env.ASSETS.fetch() for real static files, so they're still served.
+run_worker_first = true
 
 # Non-secret runtime vars
 [vars]
 FIREBASE_PROJECT_ID = "gen-lang-client-0170753836"
 FIREBASE_DATABASE_ID = "ai-studio-ce545956-aa8d-4e12-9ad5-c58ab798d709"
-# Stripe price IDs — not secret (visible in client JS anyway)
-STRIPE_MONTHLY_PRICE_ID = "price_1TbuoIGGeaVzeXJn6DUqMXnR"
-STRIPE_YEARLY_PRICE_ID  = "price_1TbusLGGeaVzeXJnZSPNgkFU"
+# Note: the app is free (ad-supported). No payment provider — Stripe/Lemon Squeezy
+# integrations were removed. Extra free questions are earned by giving feedback.
 # Email (Resend) — replace with a verified sender from your Resend domain.
 # Uses onboarding@resend.dev (test-only) until RESEND_FROM is set.
 RESEND_FROM = "Dinner Table Cards <onboarding@resend.dev>"
@@ -23,7 +32,7 @@ RESEND_FROM = "Dinner Table Cards <onboarding@resend.dev>"
 [ai]
 binding = "AI"
 
-# KV — stores Stripe customer → Firebase UID mapping, referral codes, token cache
+# KV — analytics counters, referral codes, rate-limit + token cache
 [[kv_namespaces]]
 binding = "APP_KV"
 id = "82aa3336b53041068bf461968d0397c8"
@@ -46,19 +55,12 @@ enabled = true
 enabled = true
 invocation_logs = true
 
-# Cron — reset monthly usageCount for active subscribers on the 1st of each month
+# Cron — reset monthly usageCount on the 1st of each month
 [triggers]
 crons = ["0 0 1 * *"]
 
 # Secrets (set via `wrangler secret put <NAME>` — never committed):
-#   STRIPE_SECRET_KEY
-#   STRIPE_WEBHOOK_SECRET
 #   FIREBASE_SERVICE_ACCOUNT_EMAIL
 #   FIREBASE_PRIVATE_KEY
 #   RESEND_API_KEY  ← get from resend.com/api-keys (emails silently skipped until set)
-#
-# Build-time VITE_ vars (set in .env locally or Cloudflare build environment):
-#   VITE_STRIPE_PUBLISHABLE_KEY
-#   VITE_STRIPE_MONTHLY_PRICE_ID
-#   VITE_STRIPE_YEARLY_PRICE_ID
-#   VITE_STRIPE_LIFETIME_PRICE_ID
+#   SENTRY_DSN      ← optional error monitoring; unhandled worker errors reported when set

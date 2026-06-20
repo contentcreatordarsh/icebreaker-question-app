@@ -1,15 +1,11 @@
 import React from 'react';
+import { captureError } from '../lib/sentry';
 
+interface Props { children: React.ReactNode }
 interface State { hasError: boolean; message: string }
 
-export default class ErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  State
-> {
-  constructor(props: { children: React.ReactNode }) {
-    super(props);
-    this.state = { hasError: false, message: '' };
-  }
+export default class ErrorBoundary extends React.Component<Props, State> {
+  state: State = { hasError: false, message: '' };
 
   static getDerivedStateFromError(error: unknown): State {
     return {
@@ -20,6 +16,7 @@ export default class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: unknown, info: React.ErrorInfo) {
     console.error('ErrorBoundary caught:', error, info);
+    captureError(error, { componentStack: info.componentStack, boundary: 'ErrorBoundary' });
   }
 
   render() {

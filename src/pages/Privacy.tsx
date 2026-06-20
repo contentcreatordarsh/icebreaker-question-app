@@ -20,17 +20,22 @@ export default function Privacy() {
 
           <section>
             <h2 className="font-serif text-lg italic mb-2">How we use it</h2>
-            <p>Your data powers the features you use — saving favorites, tracking streaks and usage limits, attributing referrals, and managing your subscription. We do not sell your personal information.</p>
+            <p>Your data powers the features you use — saving favorites, tracking streaks and usage, and attributing referrals. We do not sell your personal information.</p>
           </section>
 
           <section>
             <h2 className="font-serif text-lg italic mb-2">Payments</h2>
-            <p>Payments are processed by Stripe. We never see or store your full card details. We store a Stripe customer identifier so you can manage your subscription.</p>
+            <p>Dinner Table Cards is free. We don&rsquo;t take payments and never collect card or billing details.</p>
           </section>
 
           <section>
             <h2 className="font-serif text-lg italic mb-2">Analytics</h2>
             <p>We use privacy-first, cookieless analytics to understand aggregate usage (such as page views). This does not track you across other sites.</p>
+          </section>
+
+          <section>
+            <h2 className="font-serif text-lg italic mb-2">Advertising</h2>
+            <p>We keep the app free by showing ads via Google AdSense. We ask for your consent first — if you agree, Google and its partners may use cookies to show and measure ads, including more relevant ones. You can decline, and the app works exactly the same. You can change your mind any time by clearing this site&rsquo;s cookies. See <a href="https://policies.google.com/technologies/ads" target="_blank" rel="noopener noreferrer" className="underline">Google&rsquo;s ads policy</a> for details.</p>
           </section>
 
           <section>
@@ -40,7 +45,7 @@ export default function Privacy() {
 
           <section>
             <h2 className="font-serif text-lg italic mb-2">Contact</h2>
-            <p>Questions about privacy? Email <span className="underline">darshan.p.hegde@gmail.com</span>.</p>
+            <p>Questions about privacy? Email <a href="mailto:contentcreatordarsh@gmail.com" className="underline">contentcreatordarsh@gmail.com</a> or reach out on <a href="https://x.com/hegdedarsh" target="_blank" rel="noopener noreferrer" className="underline">X (@hegdedarsh)</a>.</p>
           </section>
         </div>
       </div>

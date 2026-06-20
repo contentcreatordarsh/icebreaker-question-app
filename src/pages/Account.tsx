@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ChevronLeft, Loader2 } from 'lucide-react';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { doc, getDocFromServer } from 'firebase/firestore';
 import { deleteUser, reauthenticateWithPopup } from 'firebase/auth';
-import { auth, db, authedFetch, googleProvider, signInWithGoogle } from '../lib/firebase';
+import { auth, getDb, authedFetch, googleProvider, signInWithGoogle } from '../lib/firebase';
 import { PLANS } from '../constants';
 import { UserProfile } from '../types';
 
@@ -13,7 +13,6 @@ export default function Account() {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
-  const [portalLoading, setPortalLoading] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -30,6 +29,7 @@ export default function Account() {
     }
     (async () => {
       try {
+        const db = await getDb();
         const snap = await getDocFromServer(doc(db, 'users', user.uid));
         if (snap.exists()) setProfile(snap.data() as UserProfile);
       } catch (err) {
@@ -51,6 +51,7 @@ export default function Account() {
         // Must use getDocFromServer — the reset is a server-side write that
         // bypasses the Firestore client cache.
         if (user) {
+          const db = await getDb();
           const snap = await getDocFromServer(doc(db, 'users', user.uid));
           if (snap.exists()) setProfile(snap.data() as UserProfile);
         }
@@ -62,26 +63,6 @@ export default function Account() {
       setError('Reset failed.');
     } finally {
       setResetting(false);
-    }
-  }
-
-  async function handleManageSubscription() {
-    setError(null);
-    setPortalLoading(true);
-    try {
-      const res = await authedFetch('/api/billing-portal', {
-        returnUrl: window.location.origin + '/account',
-      });
-      const data = (await res.json()) as { url?: string; error?: string };
-      if (res.ok && data.url) {
-        window.location.href = data.url;
-      } else {
-        setError(data.error || 'Could not open the billing portal.');
-        setPortalLoading(false);
-      }
-    } catch {
-      setError('Could not open the billing portal.');
-      setPortalLoading(false);
     }
   }
 
@@ -116,8 +97,6 @@ export default function Account() {
   }
 
   const plan = profile ? PLANS[profile.subscriptionPlan] ?? PLANS.free : PLANS.free;
-  const hasSubscription =
-    !!profile && (profile.subscriptionPlan === 'monthly' || profile.subscriptionPlan === 'yearly');
 
   return (
     <div className="min-h-screen bg-paper text-brand">
@@ -151,12 +130,7 @@ export default function Account() {
               </div>
               <div className="flex justify-between items-baseline border-b border-brand/10 pb-3">
                 <span className="text-[11px] caps-tracking opacity-40">Plan</span>
-                <span className="text-sm">
-                  {plan.name}
-                  {hasSubscription && profile?.subscriptionStatus === 'canceled' && (
-                    <span className="opacity-50"> · canceling</span>
-                  )}
-                </span>
+                <span className="text-sm">Free · feedback unlocks more</span>
               </div>
               <div className="flex justify-between items-baseline border-b border-brand/10 pb-3">
                 <span className="text-[11px] caps-tracking opacity-40">Usage</span>
@@ -164,6 +138,18 @@ export default function Account() {
                   {(profile?.usageCount ?? 0)} / {plan.limit + (profile?.bonusQuestions ?? 0)}
                 </span>
               </div>
+              {/* Streak info */}
+              {((profile?.currentStreak ?? 0) > 0 || (profile?.longestStreak ?? 0) > 0) && (
+                <div className="flex justify-between items-baseline border-b border-brand/10 pb-3">
+                  <span className="text-[11px] caps-tracking opacity-40">Streak</span>
+                  <span className="text-sm">
+                    🔥 {profile?.currentStreak ?? 0} day{(profile?.currentStreak ?? 0) !== 1 ? 's' : ''}
+                    {(profile?.longestStreak ?? 0) > (profile?.currentStreak ?? 0) && (
+                      <span className="opacity-40 ml-2">· best: {profile?.longestStreak}</span>
+                    )}
+                  </span>
+                </div>
+              )}
             </section>
 
             {error && <p className="text-sm text-red-700">{error}</p>}
@@ -199,24 +185,6 @@ export default function Account() {
               >
                 🎲 Session History
               </Link>
-              {hasSubscription && (
-                <button
-                  onClick={handleManageSubscription}
-                  disabled={portalLoading}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 text-[11px] caps-tracking border border-brand/30 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors disabled:opacity-50"
-                >
-                  {portalLoading && <Loader2 size={14} className="animate-spin" />}
-                  Manage subscription
-                </button>
-              )}
-              {!hasSubscription && (
-                <Link
-                  to="/"
-                  className="block w-full sm:w-auto sm:inline-flex items-center justify-center text-[11px] caps-tracking border border-brand/30 rounded-full px-5 py-2.5 hover:bg-brand hover:text-paper transition-colors text-center"
-                >
-                  Upgrade your plan
-                </Link>
-              )}
             </section>
 
             <section className="space-y-4 pt-6 border-t border-brand/10">
@@ -238,33 +206,71 @@ export default function Account() {
       </div>
 
       {showDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-brand/40 px-6">
-          <div className="bg-paper border border-brand/20 rounded-2xl max-w-sm w-full p-8">
-            <h2 className="font-serif text-xl italic mb-3">Delete your account?</h2>
-            <p className="text-sm leading-relaxed opacity-70 mb-6">
-              This permanently removes your profile, favorites, and history. Active subscriptions
-              should be canceled first. This cannot be undone.
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => { setShowDelete(false); setError(null); }}
-                disabled={deleting}
-                className="text-[11px] caps-tracking opacity-60 hover:opacity-100 transition-opacity px-4 py-2 disabled:opacity-40"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteAccount}
-                disabled={deleting}
-                className="inline-flex items-center gap-2 text-[11px] caps-tracking bg-red-700 text-paper rounded-full px-5 py-2.5 hover:bg-red-800 transition-colors disabled:opacity-50"
-              >
-                {deleting && <Loader2 size={14} className="animate-spin" />}
-                Delete forever
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeleteConfirmModal
+          deleting={deleting}
+          onCancel={() => { setShowDelete(false); setError(null); }}
+          onConfirm={handleDeleteAccount}
+        />
       )}
+    </div>
+  );
+}
+
+/** Accessible delete-account modal with focus trap, Escape-to-close, and ARIA roles. */
+function DeleteConfirmModal({ deleting, onCancel, onConfirm }: {
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  // Focus the Cancel button on mount so keyboard users land inside the modal
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !deleting) onCancel();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [deleting, onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-brand/40 px-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-dialog-title"
+      onClick={(e) => { if (e.target === e.currentTarget && !deleting) onCancel(); }}
+    >
+      <div className="bg-paper border border-brand/20 rounded-2xl max-w-sm w-full p-8">
+        <h2 id="delete-dialog-title" className="font-serif text-xl italic mb-3">Delete your account?</h2>
+        <p className="text-sm leading-relaxed opacity-70 mb-6">
+          This permanently removes your profile, favorites, and history. Active subscriptions
+          should be canceled first. This cannot be undone.
+        </p>
+        <div className="flex gap-3 justify-end">
+          <button
+            ref={cancelRef}
+            onClick={onCancel}
+            disabled={deleting}
+            className="text-[11px] caps-tracking opacity-60 hover:opacity-100 transition-opacity px-4 py-2 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={deleting}
+            className="inline-flex items-center gap-2 text-[11px] caps-tracking bg-red-700 text-paper rounded-full px-5 py-2.5 hover:bg-red-800 transition-colors disabled:opacity-50"
+          >
+            {deleting && <Loader2 size={14} className="animate-spin" />}
+            Delete forever
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

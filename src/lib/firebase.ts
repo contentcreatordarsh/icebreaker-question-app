@@ -1,12 +1,27 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer, enableNetwork } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+
+/**
+ * Lazily load + initialise Firestore. The Firestore SDK is ~60KB gzipped and is
+ * only needed for favorites, history, search, and the profile fallback — none of
+ * which are on the first-paint path. Dynamically importing it keeps that weight
+ * out of the critical bundle (big mobile perf win). The instance is cached.
+ */
+let _dbPromise: Promise<Firestore> | null = null;
+export function getDb(): Promise<Firestore> {
+  if (!_dbPromise) {
+    _dbPromise = import('firebase/firestore').then(({ getFirestore }) =>
+      getFirestore(app, firebaseConfig.firestoreDatabaseId),
+    );
+  }
+  return _dbPromise;
+}
 
 /**
  * Sign in with Google using a full-page redirect instead of a popup.
@@ -52,15 +67,3 @@ export async function authedGet(path: string): Promise<Response> {
   });
 }
 
-async function testConnection() {
-  try {
-    await enableNetwork(db);
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
-    }
-  }
-}
-
-testConnection();

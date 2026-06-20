@@ -3,24 +3,28 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import { Link } from 'react-router-dom';
-import { auth, db, signInWithGoogle, authedFetch, getRedirectResult } from './lib/firebase';
-import { doc, getDoc, getDocFromServer, setDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, getDb, signInWithGoogle, authedFetch } from './lib/firebase';
 import { AnimatePresence } from 'motion/react';
-import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Lock, Play } from 'lucide-react';
-import QuestionDisplay from './components/QuestionDisplay';
-import PackSelector from './components/PackSelector';
-import Pricing from './components/Pricing';
-import SearchOverlay from './components/SearchOverlay';
-import AboutOverlay from './components/AboutOverlay';
-import UsageDashboard from './components/UsageDashboard';
-import UserCollections from './components/UserCollections';
-import PaymentSuccessBanner from './components/PaymentSuccessBanner';
+import { LogIn, LogOut, Coffee, Smile, MessageCircle, Briefcase, Search, BookOpen, Info, Menu, X as XIcon, Heart, Lightbulb, Zap, Play } from 'lucide-react';
 import OnboardingToast from './components/OnboardingToast';
-import { Category, Difficulty, UserProfile, DailyQuestion, PREMIUM_CATEGORIES, QuestionPack } from './types';
+import AdSlot from './components/AdSlot';
+import { ADSENSE_SLOT_HOME } from './lib/ads';
+
+// Lazy-load overlay/modal components — they're behind user interaction and
+// not needed on first paint. Keeps the initial bundle small.
+const QuestionDisplay = lazy(() => import('./components/QuestionDisplay'));
+const PackSelector = lazy(() => import('./components/PackSelector'));
+const SearchOverlay = lazy(() => import('./components/SearchOverlay'));
+const AboutOverlay = lazy(() => import('./components/AboutOverlay'));
+const UsageDashboard = lazy(() => import('./components/UsageDashboard'));
+const UserCollections = lazy(() => import('./components/UserCollections'));
+import { Category, Difficulty, UserProfile, DailyQuestion, QuestionPack } from './types';
 import { QUESTION_PACKS } from './data/packs';
+import { TOPICS } from './data/topics';
+import { pickTopicQuestion } from './data/questions';
 import { PLANS } from './constants';
 import { cn } from './lib/utils';
 import Landing from './pages/Landing';
@@ -49,7 +53,6 @@ export default function App() {
   const [difficulty, setDifficulty] = useState<Difficulty>('Random');
 
   // Overlay visibility
-  const [showPricing, setShowPricing] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
@@ -66,9 +69,9 @@ export default function App() {
   const [activePack, setActivePack] = useState<QuestionPack | null>(null);
   const [packIndex, setPackIndex] = useState(0);
 
-  // Payment success
-  const [showPaymentBanner, setShowPaymentBanner] = useState(false);
-  const [premiumConfirmed, setPremiumConfirmed] = useState(false);
+  // Topics (two-level: parent group expanded + active leaf pool)
+  const [activeTopicParent, setActiveTopicParent] = useState<string | null>(null);
+  const [activeTopicLeaf, setActiveTopicLeaf] = useState<string | null>(null);
 
   // ── Profile sync ────────────────────────────────────────────────────────────
   const refreshProfile = useCallback(async (_uid: string) => {
@@ -82,18 +85,19 @@ export default function App() {
       }
     } catch { /* fall through */ }
 
-    // Fallback: try direct Firestore reads
+    // Fallback: try direct Firestore reads (Firestore SDK is lazy-loaded here).
     try {
+      const { doc, getDoc, getDocFromServer } = await import('firebase/firestore');
+      const db = await getDb();
       const docRef = doc(db, 'users', _uid);
-      const snap = await getDocFromServer(docRef);
-      if (snap.exists()) setUserProfile(snap.data() as UserProfile);
-    } catch {
       try {
-        const docRef = doc(db, 'users', _uid);
+        const snap = await getDocFromServer(docRef);
+        if (snap.exists()) setUserProfile(snap.data() as UserProfile);
+      } catch {
         const snap = await getDoc(docRef);
         if (snap.exists()) setUserProfile(snap.data() as UserProfile);
-      } catch { /* give up silently */ }
-    }
+      }
+    } catch { /* give up silently */ }
   }, []);
 
   useEffect(() => {
@@ -136,8 +140,10 @@ export default function App() {
       }
 
       // Fallback: read/create via client-side Firestore (works when the
-      // named database security rules allow it).
+      // named database security rules allow it). Firestore SDK is lazy-loaded.
       try {
+        const { doc, getDoc, setDoc, serverTimestamp } = await import('firebase/firestore');
+        const db = await getDb();
         const docRef = doc(db, 'users', user.uid);
         const docSnap = await getDoc(docRef);
 
@@ -196,20 +202,8 @@ export default function App() {
     syncProfile();
   }, [user, refreshProfile]);
 
-  // ── Google redirect sign-in result ──────────────────────────────────────────
-  // After signInWithRedirect returns the user to this page, Firebase stores the
-  // result in IndexedDB. We call getRedirectResult() once on mount to finalise
-  // it. Errors (account disabled, network, etc.) are logged but not fatal.
-  useEffect(() => {
-    getRedirectResult(auth).catch((err) => {
-      // auth/popup-closed-by-user and auth/cancelled-popup-request are benign
-      // (user closed the window). Log everything else.
-      if (err?.code !== 'auth/popup-closed-by-user' &&
-          err?.code !== 'auth/cancelled-popup-request') {
-        console.error('Redirect sign-in error:', err?.code, err?.message);
-      }
-    });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Note: Google redirect sign-in is finalised centrally in main.tsx (runs on
+  // every route, since the redirect can land on /play, /host, etc. — not just "/").
 
   // ── Referral capture ────────────────────────────────────────────────────────
   // Stash ?ref=CODE in localStorage so it survives the Google OAuth redirect,
@@ -224,44 +218,6 @@ export default function App() {
     window.history.replaceState({}, '', qs ? `/?${qs}` : '/');
   }, []);
 
-  // ── Payment success detection ───────────────────────────────────────────────
-  // Stripe redirects back with ?payment=success. Poll until the webhook has
-  // updated Firestore (there's a race between redirect and webhook arrival).
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('payment') !== 'success') return;
-
-    // Strip the query param from the URL immediately
-    window.history.replaceState({}, '', '/');
-    setShowPaymentBanner(true);
-
-    if (!user) return;
-
-    let attempts = 0;
-    // Poll every 2s for up to 30s — webhooks can take 5–15s in production.
-    // Uses the server /api/profile endpoint (service account) so we always
-    // see the webhook's server-side write immediately.
-    const poll = setInterval(async () => {
-      attempts++;
-      try {
-        const res = await authedFetch('/api/profile');
-        if (res.ok) {
-          const { profile } = await res.json();
-          if (profile) {
-            setUserProfile(profile as UserProfile);
-            if ((profile as UserProfile).isPremium === true) {
-              setPremiumConfirmed(true);
-              clearInterval(poll);
-              return;
-            }
-          }
-        }
-      } catch { /* retry */ }
-      if (attempts >= 15) clearInterval(poll);
-    }, 2000);
-
-    return () => clearInterval(poll);
-  }, [user, refreshProfile]);
 
   // ── Categories ──────────────────────────────────────────────────────────────
   const categories: { label: Category; icon: React.ElementType }[] = [
@@ -286,9 +242,22 @@ export default function App() {
 
   const handleShuffle = useCallback(() => {
     setActivePack(null);
+    // If a topic is active, re-pick from that topic pool instead of the daily bank.
+    if (activeTopicLeaf) {
+      setOverrideQuestion(pickTopicQuestion(activeTopicLeaf, difficulty));
+      return;
+    }
     setOverrideQuestion(null);
     setShuffleKey(k => k + 1);
-  }, []);
+  }, [activeTopicLeaf, difficulty]);
+
+  // ── Topic handlers ───────────────────────────────────────────────────────────
+  const handleSelectTopic = useCallback((leafId: string) => {
+    setActivePack(null);
+    setCategory('Icebreaker'); // neutral, non-premium category for the gate
+    setActiveTopicLeaf(leafId);
+    setOverrideQuestion(pickTopicQuestion(leafId, difficulty));
+  }, [difficulty]);
 
   // ── Pack handlers ────────────────────────────────────────────────────────────
   const packQuestionToOverride = useCallback((pack: QuestionPack, idx: number): DailyQuestion => ({
@@ -300,6 +269,8 @@ export default function App() {
 
   const handleSelectPack = useCallback((pack: QuestionPack) => {
     setActivePack(pack);
+    setActiveTopicLeaf(null);
+    setActiveTopicParent(null);
     setPackIndex(0);
     setOverrideQuestion(packQuestionToOverride(pack, 0));
   }, [packQuestionToOverride]);
@@ -345,15 +316,13 @@ export default function App() {
 
   return (
     <div className="editorial-container">
-      {/* Payment success banner */}
-      <AnimatePresence>
-        {showPaymentBanner && (
-          <PaymentSuccessBanner
-            isPremiumConfirmed={premiumConfirmed}
-            onDismiss={() => setShowPaymentBanner(false)}
-          />
-        )}
-      </AnimatePresence>
+      {/* Skip-to-content link — visible only on keyboard focus */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-brand focus:px-4 focus:py-2 focus:text-paper focus:text-xs"
+      >
+        Skip to content
+      </a>
 
       {/* Decorative Sidebars */}
       <div className="hidden lg:block absolute left-4 top-1/2 -translate-y-1/2 caps-tracking opacity-30 origin-center -rotate-90 whitespace-nowrap">
@@ -382,7 +351,7 @@ export default function App() {
             <span className="caps-tracking">
               {new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' })}
             </span>
-            <div className="flex items-center gap-4 mt-2">
+            <nav aria-label="Main navigation" className="flex items-center gap-4 mt-2">
               <button onClick={() => setShowAbout(true)} className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-1.5">
                 <Info size={11} /> About
               </button>
@@ -413,11 +382,20 @@ export default function App() {
                       <span className="text-[8px] caps-tracking opacity-20 group-hover:opacity-60 transition-opacity">
                         {userProfile?.usageCount || 0} / {
                           PLANS[userProfile?.subscriptionPlan || 'free'].limit === 1000000
-                            ? '∞' : PLANS[userProfile?.subscriptionPlan || 'free'].limit
+                            ? '∞'
+                            : PLANS[userProfile?.subscriptionPlan || 'free'].limit + (userProfile?.bonusQuestions ?? 0)
                         }
                       </span>
                     </div>
                   </button>
+                  {(userProfile?.currentStreak ?? 0) > 0 && (
+                    <span
+                      className="caps-tracking text-[10px] opacity-60 flex items-center gap-1"
+                      title={`${userProfile?.currentStreak}-day streak`}
+                    >
+                      🔥 {userProfile?.currentStreak}
+                    </span>
+                  )}
                   <button onClick={() => auth.signOut()} className="caps-tracking hover:opacity-60 transition-opacity flex items-center gap-1.5">
                     <LogOut size={11} /> Out
                   </button>
@@ -429,10 +407,7 @@ export default function App() {
                 </button>
               )}
 
-              {userProfile?.isPremium && (
-                <span className="caps-tracking bg-accent/10 py-1 px-3 rounded-sm text-[10px]">Premium</span>
-              )}
-            </div>
+            </nav>
           </div>
 
           {/* Mobile: right side — user avatar + hamburger */}
@@ -492,45 +467,70 @@ export default function App() {
         )}
       </header>
 
-      <main className="flex-grow flex flex-col py-12 max-w-7xl mx-auto w-full">
+      <main id="main-content" className="flex-grow flex flex-col py-12 max-w-7xl mx-auto w-full">
+        {/* Live-session CTA — prominent entry so hosting isn't buried in the nav */}
+        <div className="px-4 md:px-8 mb-14">
+          <Link
+            to="/play"
+            className="group mx-auto flex max-w-2xl items-center gap-4 rounded-2xl border border-brand/15 bg-accent/[0.06] p-4 sm:p-5 transition-all hover:border-accent/40 hover:shadow-md"
+          >
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-accent text-white">
+              <Play size={20} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-serif text-lg italic text-brand">Host a Live Session</span>
+              <span className="block text-sm leading-snug text-brand/55">
+                Everyone answers the same question on their phones, then reveal &amp; vote — perfect for dinners &amp; teams.
+              </span>
+            </span>
+            <span className="hidden shrink-0 caps-tracking text-[10px] text-accent opacity-60 transition-opacity group-hover:opacity-100 sm:block">
+              Start&nbsp;&rarr;
+            </span>
+          </Link>
+        </div>
+
         {/* Category Selector */}
-        <div className="flex justify-center flex-wrap gap-x-5 gap-y-4 mb-16 px-4 md:px-8">
+        <p className="text-center text-[10px] uppercase tracking-[0.3em] text-brand/30 mb-4 px-4">
+          Choose a theme
+        </p>
+        <div className="flex justify-center flex-wrap gap-x-5 gap-y-4 mb-12 px-4 md:px-8">
           {categories.map((cat) => {
             const isActive = category === cat.label;
-            const isPremiumCat = (PREMIUM_CATEGORIES as readonly string[]).includes(cat.label);
-            const isLocked = isPremiumCat && !isPremium;
             return (
               <button
                 key={cat.label}
                 onClick={() => {
                   setCategory(cat.label);
                   setOverrideQuestion(null);
-                  if (isLocked) setShowPricing(true);
+                  setActiveTopicLeaf(null);
+                  setActiveTopicParent(null);
                 }}
                 className={cn(
                   'caps-tracking pb-2 pt-1 transition-all border-b-2 flex items-center gap-1.5 min-h-[40px]',
                   isActive ? 'border-brand opacity-100' : 'border-transparent opacity-40 hover:opacity-80',
-                  isLocked && 'opacity-30 hover:opacity-60',
                 )}
               >
-                {isLocked && <Lock size={9} />}
                 {cat.label}
-                {isPremiumCat && !isLocked && (
-                  <span className="text-[8px] caps-tracking bg-accent/20 text-accent px-1.5 py-0.5 rounded-sm leading-none">Pro</span>
-                )}
               </button>
             );
           })}
         </div>
 
         {/* Difficulty Selector */}
+        <p className="text-center text-[10px] uppercase tracking-[0.3em] text-brand/30 mb-4 px-4">
+          How deep? <span className="normal-case tracking-normal opacity-70">· Light = playful, Deep = meaningful</span>
+        </p>
         <div className="flex justify-center gap-4 mb-12">
           {(['Light', 'Deep', 'Random'] as Difficulty[]).map((dif) => {
             const isActive = difficulty === dif;
             return (
               <button
                 key={dif}
-                onClick={() => { setDifficulty(dif); setOverrideQuestion(null); }}
+                onClick={() => {
+                  setDifficulty(dif);
+                  if (activeTopicLeaf) setOverrideQuestion(pickTopicQuestion(activeTopicLeaf, dif));
+                  else setOverrideQuestion(null);
+                }}
                 className={cn(
                   'px-5 py-3 text-[10px] caps-tracking border transition-all min-h-[44px]',
                   isActive ? 'bg-brand text-white border-brand' : 'border-brand/10 opacity-40 hover:opacity-100',
@@ -542,27 +542,74 @@ export default function App() {
           })}
         </div>
 
+        {/* Topics — two-level selector (parent group → sub-topic pool) */}
+        <div className="mb-12 px-4 md:px-8">
+          <div className="text-center mb-5">
+            <span className="caps-tracking opacity-40">Explore by Topic</span>
+          </div>
+          <div className="flex justify-center flex-wrap gap-2.5 mb-4">
+            {TOPICS.map((group) => {
+              const isOpen = activeTopicParent === group.id;
+              return (
+                <button
+                  key={group.id}
+                  onClick={() => setActiveTopicParent(isOpen ? null : group.id)}
+                  className={cn(
+                    'caps-tracking text-[10px] px-4 py-2 rounded-full border transition-all flex items-center gap-1.5 min-h-[36px]',
+                    isOpen ? 'bg-brand text-white border-brand' : 'border-brand/15 opacity-60 hover:opacity-100',
+                  )}
+                >
+                  <span aria-hidden>{group.emoji}</span> {group.label}
+                </button>
+              );
+            })}
+          </div>
+          {activeTopicParent && (
+            <div className="flex justify-center flex-wrap gap-2">
+              {TOPICS.find(g => g.id === activeTopicParent)?.children.map((leaf) => {
+                const isActive = activeTopicLeaf === leaf.id;
+                return (
+                  <button
+                    key={leaf.id}
+                    onClick={() => handleSelectTopic(leaf.id)}
+                    className={cn(
+                      'caps-tracking text-[10px] px-3.5 py-1.5 rounded-full border transition-all min-h-[32px]',
+                      isActive ? 'bg-accent text-white border-accent' : 'border-brand/10 opacity-50 hover:opacity-100',
+                    )}
+                  >
+                    {leaf.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* PackSelector + QuestionDisplay are lazy-loaded so signed-out visitors
+            (the viral landing entry) don't download them or the question data. */}
+        <Suspense fallback={<div className="flex-grow flex items-center justify-center min-h-[300px]"><div className="w-6 h-6 border-2 border-brand/20 border-t-brand rounded-full animate-spin" /></div>}>
         {/* Question Packs */}
         <PackSelector
           packs={QUESTION_PACKS}
           activePack={activePack}
           packIndex={packIndex}
-          isPremium={isPremium}
+          isPremium={true} /* all content is free — no paid tier */
           onSelectPack={handleSelectPack}
           onExitPack={handleExitPack}
           onPackNext={handlePackNext}
           onPackPrev={handlePackPrev}
-          onUpgrade={() => setShowPricing(true)}
+          onUpgrade={() => {}}
         />
 
         {/* Question Area */}
         <div className="flex-grow flex flex-col justify-center px-8">
           <QuestionDisplay
+            // Remount when the active topic changes so a topic switch always
+            // shows a fresh question (inert when no topic is selected).
+            key={activeTopicLeaf ?? 'main'}
             category={category}
             difficulty={difficulty}
             userProfile={userProfile}
-            onUpgrade={() => setShowPricing(true)}
-            isPremium={isPremium}
             shuffleKey={shuffleKey}
             overrideQuestion={overrideQuestion}
             onUsageIncremented={(newCount?: number) => {
@@ -592,33 +639,21 @@ export default function App() {
             }}
           />
         </div>
+        </Suspense>
 
-        {/* Upgrade / Pricing */}
-        <div className="mt-12 w-full px-8 pb-12">
-          {!userProfile?.isPremium && (
-            <div className="border-t border-brand/10 pt-12 text-center">
-              <span className="caps-tracking opacity-40 mb-4 block">Archive Access</span>
-              <button
-                onClick={() => setShowPricing(!showPricing)}
-                className="text-2xl font-serif italic text-brand hover:opacity-60 transition-opacity block mx-auto mb-8"
-              >
-                {showPricing ? 'Continue Dialogue' : 'Unlock the complete archive of over 3,000 provocations'}
-              </button>
-
-              <AnimatePresence>
-                {showPricing && <Pricing onSuccess={() => setShowPricing(false)} />}
-              </AnimatePresence>
-            </div>
-          )}
-        </div>
       </main>
+
+      {/* Ad unit — hidden until a real ad fills (invisible before approval / when
+          unfilled). Consent is handled by Google's CMP. Kept off the live-game
+          screens (separate routes) to stay non-intrusive. */}
+      <AdSlot slot={ADSENSE_SLOT_HOME} />
 
       {/* Footer */}
       <footer className="p-8 md:p-12 grid grid-cols-1 md:grid-cols-3 items-end border-t border-brand/10 max-w-7xl mx-auto w-full gap-8">
         <div className="space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-2 h-2 rounded-full bg-accent" />
-            <span className="caps-tracking">Connection Verified</span>
+            <span className="caps-tracking">Works Offline</span>
           </div>
           <div className="flex gap-4">
             <button
@@ -666,7 +701,7 @@ export default function App() {
         </div>
 
         <div className="text-right space-y-3">
-          <div className="flex gap-4 justify-end caps-tracking opacity-50">
+          <div className="flex gap-4 justify-end caps-tracking opacity-50 flex-wrap">
             <Link to="/privacy" className="hover:opacity-100 transition-opacity">Privacy</Link>
             <Link to="/terms" className="hover:opacity-100 transition-opacity">Terms</Link>
             <Link to="/account" className="hover:opacity-100 transition-opacity">Account</Link>
@@ -685,29 +720,30 @@ export default function App() {
         }
       />
 
-      {/* Overlays */}
-      <AnimatePresence>
-        {showCollections && (
-          <UserCollections
-            onClose={() => setShowCollections(false)}
-            onSelectQuestion={handleSelectQuestion}
-          />
-        )}
-        {showSearch && (
-          <SearchOverlay
-            onClose={() => setShowSearch(false)}
-            onSelectQuestion={handleSelectQuestion}
-          />
-        )}
-        {showAbout && <AboutOverlay onClose={() => setShowAbout(false)} />}
-        {showUsageDashboard && userProfile && (
-          <UsageDashboard
-            userProfile={userProfile}
-            onClose={() => setShowUsageDashboard(false)}
-            onUpgrade={() => { setShowUsageDashboard(false); setShowPricing(true); }}
-          />
-        )}
-      </AnimatePresence>
+      {/* Overlays — lazy-loaded, wrapped in Suspense */}
+      <Suspense fallback={null}>
+        <AnimatePresence>
+          {showCollections && (
+            <UserCollections
+              onClose={() => setShowCollections(false)}
+              onSelectQuestion={handleSelectQuestion}
+            />
+          )}
+          {showSearch && (
+            <SearchOverlay
+              onClose={() => setShowSearch(false)}
+              onSelectQuestion={handleSelectQuestion}
+            />
+          )}
+          {showAbout && <AboutOverlay onClose={() => setShowAbout(false)} />}
+          {showUsageDashboard && userProfile && (
+            <UsageDashboard
+              userProfile={userProfile}
+              onClose={() => setShowUsageDashboard(false)}
+            />
+          )}
+        </AnimatePresence>
+      </Suspense>
     </div>
   );
 }

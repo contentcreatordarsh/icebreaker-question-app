@@ -1,5 +1,5 @@
-import Stripe from 'stripe';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
+import * as Sentry from '@sentry/cloudflare';
 
 // Re-export Durable Object class so wrangler can discover it from the entrypoint.
 export { GameSession } from './game-session';
@@ -7,12 +7,6 @@ export { GameSession } from './game-session';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Env {
-  // Stripe
-  STRIPE_SECRET_KEY: string;
-  STRIPE_WEBHOOK_SECRET: string;
-  // Stripe price IDs — set in wrangler.toml [vars] (not secrets; they're public)
-  STRIPE_MONTHLY_PRICE_ID: string;
-  STRIPE_YEARLY_PRICE_ID: string;
   // Firebase service account (for Firestore REST writes — bypasses security rules)
   FIREBASE_SERVICE_ACCOUNT_EMAIL: string;
   FIREBASE_PRIVATE_KEY: string;        // PEM string, full RSA private key
@@ -27,11 +21,15 @@ interface Env {
   // Email — optional; app works without them (emails silently skipped)
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;   // e.g. "Dinner Table Cards <noreply@yourdomain.com>"
+  // Error monitoring (optional — no-op when unset). Set via `wrangler secret put SENTRY_DSN`.
+  SENTRY_DSN?: string;
   // (ADMIN_SECRET removed — admin routes now require a Firebase ID token from an admin email)
 }
 
-// Module-level token cache — survives across requests in the same Worker isolate
+// Module-level token cache — survives across requests in the same Worker isolate.
+// pendingRefresh coalesces concurrent token refreshes into one API call.
 let cachedFirestoreToken: { token: string; expiresAt: number } | null = null;
+let pendingRefresh: Promise<string> | null = null;
 
 // Firebase ID-token verification: Google's public JWKS for securetoken.
 // createRemoteJWKSet caches keys and refreshes them as needed.
@@ -56,7 +54,10 @@ const ALLOWED_ORIGINS = [
  * Verify a Firebase ID token from the Authorization: Bearer header.
  * Returns { uid, email } on success, or null if missing/invalid.
  */
-async function verifyIdToken(request: Request, env: Env): Promise<{ uid: string; email: string | null } | null> {
+async function verifyIdToken(
+  request: Request,
+  env: Env,
+): Promise<{ uid: string; email: string | null; emailVerified: boolean } | null> {
   const authHeader = request.headers.get('Authorization') ?? '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (!match) return null;
@@ -65,9 +66,17 @@ async function verifyIdToken(request: Request, env: Env): Promise<{ uid: string;
     const { payload } = await jwtVerify(match[1], FIREBASE_JWKS, {
       issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
       audience: env.FIREBASE_PROJECT_ID,
+      // Pin the signing algorithm: Firebase ID tokens are always RS256. Explicitly
+      // restricting it blocks algorithm-confusion attacks (e.g. forged "alg":"none"
+      // or HS256 tokens signed with the public key).
+      algorithms: ['RS256'],
     });
     if (!payload.sub) return null;
-    return { uid: payload.sub, email: (payload.email as string) ?? null };
+    return {
+      uid: payload.sub,
+      email: (payload.email as string) ?? null,
+      emailVerified: payload.email_verified === true,
+    };
   } catch (err) {
     console.error('ID token verification failed:', err instanceof Error ? err.message : err);
     return null;
@@ -77,6 +86,27 @@ async function verifyIdToken(request: Request, env: Env): Promise<{ uid: string;
 /** Helper to return a 401 JSON response. */
 function unauthorized(): Response {
   return Response.json({ error: 'Unauthorized' }, { status: 401 });
+}
+
+/**
+ * Gate for owner-only endpoints. Returns the verified admin identity, or a ready
+ * Response (401/403) to return directly. Requires, in order: a valid Firebase ID
+ * token (verifyIdToken), a *verified* email, and membership in ADMIN_EMAILS. This
+ * is the single source of truth for admin authorization — every /api/admin/*
+ * handler funnels through it so the checks can never drift apart.
+ */
+type AdminAuth = { uid: string; email: string | null; emailVerified: boolean };
+
+async function requireAdmin(request: Request, env: Env): Promise<AdminAuth | Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+  const email = auth.email ?? '';
+  if (!auth.emailVerified || !ADMIN_EMAILS.includes(email)) {
+    // Log denied attempts for observability (allowed attempts are uninteresting noise).
+    console.warn(`[admin] denied: uid=${auth.uid} email=${email || '(none)'} verified=${auth.emailVerified}`);
+    return Response.json({ error: 'Forbidden' }, { status: 403 });
+  }
+  return auth;
 }
 
 /**
@@ -98,17 +128,30 @@ function addSecurityHeaders(response: Response): Response {
   //   • Google user avatars (lh3.googleusercontent.com)
   //   • Firebase Auth popup/iframe (project firebaseapp.com + accounts.google.com)
   //   • PWA manifest (manifest-src 'self')
-  // NOTE: if Cloudflare Web Analytics is enabled, also add
-  //   https://static.cloudflareinsights.com to script-src and connect-src.
+  // Cloudflare Web Analytics is allowed in CSP (beacon script + connect for reporting).
+  // Google AdSense origins — permitted so ads can load once a publisher ID is set.
+  // Scoped to Google's ad domains (no broad wildcards). Harmless until ads serve.
+  const AD_SCRIPT = 'https://pagead2.googlesyndication.com https://*.googlesyndication.com https://adservice.google.com https://*.googleadservices.com';
+  const AD_FRAME = 'https://googleads.g.doubleclick.net https://*.googlesyndication.com https://www.google.com';
+  const AD_IMG = 'https://*.googlesyndication.com https://*.g.doubleclick.net https://*.google.com';
+  const AD_CONNECT = 'https://*.googlesyndication.com https://*.g.doubleclick.net https://*.google.com https://*.googleadservices.com';
   r.headers.set(
     'Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self'; " +
+    // apis.google.com hosts the gapi script (api.js) Firebase Auth uses to set
+    // up its cross-frame messaging relay for getRedirectResult.
+    `script-src 'self' https://apis.google.com https://static.cloudflareinsights.com ${AD_SCRIPT}; ` +
     "style-src 'self' 'unsafe-inline'; " +
     "connect-src 'self' wss: https://firestore.googleapis.com https://securetoken.googleapis.com " +
-      "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com; " +
-    "img-src 'self' https://lh3.googleusercontent.com data:; " +
-    "frame-src https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com; " +
+      "https://identitytoolkit.googleapis.com https://accounts.google.com https://oauth2.googleapis.com " +
+      "https://apis.google.com https://www.googleapis.com " +
+      `https://cloudflareinsights.com https://*.sentry.io ${AD_CONNECT}; ` +
+    `img-src 'self' https://lh3.googleusercontent.com data: ${AD_IMG}; ` +
+    // Firebase Auth loads its helper iframe from the authDomain (now our own
+    // origin, 'self', i.e. /__/auth/iframe) plus a gapi relay iframe from
+    // apis.google.com. Without 'self' + apis.google.com here, getRedirectResult
+    // fails with auth/internal-error. firebaseapp.com kept for completeness.
+    `frame-src 'self' https://apis.google.com https://gen-lang-client-0170753836.firebaseapp.com https://accounts.google.com ${AD_FRAME}; ` +
     "frame-ancestors 'none'; " +
     "object-src 'none'; " +
     "base-uri 'self'; " +
@@ -154,7 +197,7 @@ const APP_URL = 'https://dinnertablecards.xyz';
 
 /** Shared email footer / button styles */
 const EMAIL_BUTTON = `display:inline-block; background:#5A5A40; color:#F5F2ED; font-size:11px; letter-spacing:0.3em; text-transform:uppercase; padding:14px 28px; text-decoration:none;`;
-const EMAIL_FOOTER = `<p style="font-size: 11px; color: #1A1A1A; opacity: 0.3; margin-top: 40px;">© ${new Date().getFullYear()} Cultivating Meaningful Dialogue · <a href="${APP_URL}/account" style="color:#1A1A1A;">Manage subscription</a></p>`;
+const EMAIL_FOOTER = `<p style="font-size: 11px; color: #1A1A1A; opacity: 0.3; margin-top: 40px;">© ${new Date().getFullYear()} Cultivating Meaningful Dialogue · <a href="${APP_URL}/account" style="color:#1A1A1A;">Your account</a></p>`;
 
 function welcomeEmailHtml(_email: string): string {
   return `
@@ -172,21 +215,6 @@ function welcomeEmailHtml(_email: string): string {
   </div>`;
 }
 
-function premiumEmailHtml(plan: string): string {
-  return `
-  <div style="font-family: Georgia, serif; max-width: 560px; margin: 0 auto; padding: 40px 24px; background: #F5F2ED; color: #1A1A1A;">
-    <p style="font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase; opacity: 0.4; margin: 0 0 24px;">Dinner Table Cards · Premium</p>
-    <h1 style="font-size: 32px; font-style: italic; font-weight: 400; margin: 0 0 16px; line-height: 1.2;">Welcome to the full archive.</h1>
-    <p style="font-size: 15px; line-height: 1.8; opacity: 0.7; margin: 0 0 24px;">
-      Your ${plan} plan is now active. Every category is unlocked — including Philosophy, Date Night, and Creative Sparks — and you have access to hundreds of questions per month.
-    </p>
-    <p style="font-size: 15px; line-height: 1.8; opacity: 0.7; margin: 0 0 32px;">
-      Manage or cancel your subscription at any time from your account page.
-    </p>
-    <a href="${APP_URL}" style="${EMAIL_BUTTON}">Start exploring →</a>
-    ${EMAIL_FOOTER}
-  </div>`;
-}
 
 function streakMilestoneEmailHtml(streak: number, topCategory: string): string {
   const emojis: Record<number, string> = { 3: '🌱', 7: '🔥', 14: '⚡', 30: '🏆' };
@@ -226,12 +254,6 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return Response.json({ status: 'ok' });
   }
 
-  if (url.pathname === '/api/create-checkout-session' && request.method === 'POST') {
-    return handleCheckout(request, env);
-  }
-  if (url.pathname === '/api/stripe-webhook' && request.method === 'POST') {
-    return handleStripeWebhook(request, env);
-  }
   if (url.pathname === '/api/generate-question' && request.method === 'POST') {
     return handleGenerateQuestion(request, env);
   }
@@ -243,9 +265,6 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   }
   if (url.pathname === '/api/consume' && request.method === 'POST') {
     return handleConsume(request, env);
-  }
-  if (url.pathname === '/api/billing-portal' && request.method === 'POST') {
-    return handleBillingPortal(request, env);
   }
   if (url.pathname === '/api/delete-account' && request.method === 'POST') {
     return handleDeleteAccount(request, env);
@@ -272,10 +291,23 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   if (url.pathname === '/api/feedback' && request.method === 'POST') {
     return handleFeedback(request, env);
   }
+  // Feedback-for-free-questions unlock (auth required — grants bonus questions)
+  if (url.pathname === '/api/feedback-unlock' && request.method === 'POST') {
+    return handleFeedbackUnlock(request, env);
+  }
 
   // ── Public stats endpoint ──────────────────────────────────────────────────
   if (url.pathname === '/api/stats' && request.method === 'GET') {
     return handleStats(env);
+  }
+
+  // ── Per-question share page (dynamic Open Graph) ───────────────────────────
+  // Facebook/LinkedIn ignore pre-filled share text and build their preview from
+  // the shared URL's OG tags. Sharing /q?t=<question> serves a page whose OG
+  // title IS the question, so those previews finally show it. Humans see a
+  // branded card with a CTA into the app.
+  if (url.pathname === '/q' && request.method === 'GET') {
+    return handleQuestionShare(url);
   }
 
   // ── Session history endpoint (auth required) ────────────────────────────────
@@ -296,12 +328,69 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return handleAdminFeedbackList(request, env);
   }
 
+  // ── Dynamic Open Graph for live-game share surfaces ────────────────────────
+  // Room invites (/play/<code>) and the recap card (/play?q=&p=) must link to the
+  // real SPA route so clicking joins/plays — so instead of a separate /q-style
+  // page, we rewrite the SPA index.html's OG/Twitter meta on the fly. Humans get
+  // the full app; crawlers (FB, LinkedIn, WhatsApp, iMessage, Slack) get a rich,
+  // session-specific preview — consistent with /q.
+  const playMatch = url.pathname.match(/^\/play(?:\/([A-Za-z0-9]{4,8}))?\/?$/);
+  if (playMatch && request.method === 'GET') {
+    const resp = await env.ASSETS.fetch(request);
+    if ((resp.headers.get('content-type') || '').includes('text/html')) {
+      const code = (playMatch[1] || '').toUpperCase();
+      const q = parseInt(url.searchParams.get('q') || '', 10);
+      const p = parseInt(url.searchParams.get('p') || '', 10);
+      let title: string, description: string;
+      if (code) {
+        title = 'Join my Dinner Table Cards game';
+        description = `Room ${code} · tap to join the live conversation game — no app, no sign-up.`;
+      } else if (q > 0 && p > 0) {
+        title = 'We just played Dinner Table Cards!';
+        description = `${q} question${q === 1 ? '' : 's'} · ${p} player${p === 1 ? '' : 's'}. Start your own free live conversation game.`;
+      } else {
+        title = 'Play Dinner Table Cards — live conversation game';
+        description = 'Host a live, Kahoot-style conversation game. Everyone answers, everyone connects. Free — no app, no sign-up.';
+      }
+      return injectOpenGraph(resp, { title, description, url: `https://dinnertablecards.xyz${url.pathname}${url.search}` });
+    }
+    return resp;
+  }
+
   return env.ASSETS.fetch(request);
 }
 
-export default {
+const handler = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // ── Firebase reserved config endpoint ───────────────────────────────────
+    // Firebase's auth handler (/__/auth/handler.js) fetches the project config
+    // from [authDomain]/__/firebase/init.json to obtain the apiKey/projectId it
+    // needs to exchange the OAuth code. Because authDomain is our own domain
+    // (dinnertablecards.xyz) and Firebase Hosting was never deployed for this
+    // project, that path would otherwise fall through to the SPA and return
+    // HTML — breaking the handler with auth/internal-error and silently
+    // aborting every signInWithRedirect. We serve the (public, client-side)
+    // config here so the handler can complete the sign-in.
+    if (url.pathname === '/__/firebase/init.json') {
+      return new Response(
+        JSON.stringify({
+          apiKey: 'AIzaSyDiVSR5GThxIJBGxnwwvb_UtytkFmlkrAI',
+          authDomain: 'dinnertablecards.xyz',
+          projectId: 'gen-lang-client-0170753836',
+          storageBucket: 'gen-lang-client-0170753836.firebasestorage.app',
+          messagingSenderId: '962093257082',
+          appId: '1:962093257082:web:4d9096bdaeefdf9501c6c3',
+        }),
+        {
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'public, max-age=3600',
+          },
+        },
+      );
+    }
 
     // ── Firebase auth handler proxy ─────────────────────────────────────────
     // Firebase's signInWithRedirect uses [authDomain]/__/auth/ as the OAuth
@@ -336,206 +425,12 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-// ── Stripe Checkout ───────────────────────────────────────────────────────────
-
-async function handleCheckout(request: Request, env: Env): Promise<Response> {
-  if (!env.STRIPE_SECRET_KEY) {
-    return Response.json({ error: 'Stripe is not configured' }, { status: 500 });
-  }
-
-  // Authenticate: the buyer is whoever the verified token says — never trust a body UID.
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-
-  const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-
-  try {
-    const body = await request.json() as {
-      priceId: string;
-      successUrl: string;
-      cancelUrl: string;
-      mode: 'subscription' | 'payment';
-    };
-
-    // Guard against missing env vars — misconfiguration, not user error.
-    if (!env.STRIPE_MONTHLY_PRICE_ID || !env.STRIPE_YEARLY_PRICE_ID) {
-      console.error('Stripe price ID env vars are not configured');
-      return Response.json({ error: 'Checkout is not configured.' }, { status: 500 });
-    }
-
-    // Reject any price ID not explicitly issued by this app — prevents a user
-    // substituting a cheaper/different price from the same Stripe account.
-    const ALLOWED_PRICE_IDS = [env.STRIPE_MONTHLY_PRICE_ID, env.STRIPE_YEARLY_PRICE_ID];
-    if (!body.priceId || !ALLOWED_PRICE_IDS.includes(body.priceId)) {
-      return Response.json({ error: 'Invalid price ID.' }, { status: 400 });
-    }
-
-    // Validate redirect URLs against the app's own origins to prevent open redirects.
-    const successUrl = ALLOWED_ORIGINS.some(o => (body.successUrl ?? '').startsWith(o))
-      ? body.successUrl
-      : APP_ORIGIN + '?payment=success';
-    const cancelUrl = ALLOWED_ORIGINS.some(o => (body.cancelUrl ?? '').startsWith(o))
-      ? body.cancelUrl
-      : APP_ORIGIN + '?payment=cancel';
-
-    const firebaseUid = auth.uid;
-    const customerEmail = auth.email ?? undefined;
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{ price: body.priceId, quantity: 1 }],
-      mode: body.mode ?? 'subscription',
-      customer_email: customerEmail,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      // Store Firebase UID + priceId so webhook can map payment → user and plan
-      // without needing to expand line_items (which requires an extra API call)
-      metadata: { firebaseUid, priceId: body.priceId },
-    });
-
-    // Pre-cache email → UID mapping in KV as a fallback for the webhook
-    if (customerEmail) {
-      await env.APP_KV.put(`email:${customerEmail}`, firebaseUid, { expirationTtl: 60 * 60 * 24 * 30 });
-    }
-
-    return Response.json({ id: session.id, url: session.url });
-  } catch (err: unknown) {
-    console.error('Stripe Checkout Error:', err instanceof Error ? err.message : err);
-    return Response.json({ error: 'Checkout failed — please try again.' }, { status: 500 });
-  }
-}
-
-// ── Stripe Webhook ────────────────────────────────────────────────────────────
-
-async function handleStripeWebhook(request: Request, env: Env): Promise<Response> {
-  if (!env.STRIPE_WEBHOOK_SECRET || !env.STRIPE_SECRET_KEY) {
-    return Response.json({ error: 'Stripe not configured' }, { status: 500 });
-  }
-
-  // IMPORTANT: read raw body as text BEFORE any JSON parsing — Stripe SDK needs raw string
-  const rawBody = await request.text();
-  // Support both classic webhooks (stripe-signature) and new Event Destinations (webhook-signature)
-  const signature = request.headers.get('stripe-signature') ?? request.headers.get('webhook-signature');
-  if (!signature) return Response.json({ error: 'Missing signature' }, { status: 400 });
-
-  const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-  let event: Stripe.Event;
-
-  try {
-    event = await stripe.webhooks.constructEventAsync(
-      rawBody,
-      signature,
-      env.STRIPE_WEBHOOK_SECRET,
-    );
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Signature error';
-    console.error('Webhook signature verification failed:', message);
-    return Response.json({ error: message }, { status: 400 });
-  }
-
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session;
-        const uid = session.metadata?.firebaseUid
-          ?? await env.APP_KV.get(`email:${session.customer_email}`);
-
-        if (!uid) {
-          console.error('No Firebase UID found for session', session.id);
-          break;
-        }
-
-        // Cache stripeCustomerId → uid for subscription lifecycle events
-        if (session.customer) {
-          await env.APP_KV.put(`customer:${session.customer}`, uid, { expirationTtl: 60 * 60 * 24 * 365 });
-        }
-
-        const planMap: Record<string, string> = {
-          [env.STRIPE_MONTHLY_PRICE_ID]: 'monthly',
-          [env.STRIPE_YEARLY_PRICE_ID]:  'yearly',
-        };
-
-        // Determine plan: prefer priceId stored in metadata (set at checkout creation),
-        // fall back to line_items if available (requires expansion), then default to monthly
-        const priceId = session.metadata?.priceId
-          ?? session.line_items?.data?.[0]?.price?.id
-          ?? '';
-        const subscriptionPlan = planMap[priceId] ?? 'monthly';
-
-        await updateFirestoreUser(uid, {
-          isPremium: true,
-          subscriptionPlan,
-          subscriptionStatus: 'active',
-          ...(session.customer && { stripeCustomerId: String(session.customer) }),
-        }, env);
-
-        // Send payment confirmation email
-        const customerEmail = session.customer_email;
-        if (customerEmail) {
-          sendEmail(
-            customerEmail,
-            `You're now Premium — Dinner Table Cards`,
-            premiumEmailHtml(subscriptionPlan),
-            env,
-          ).catch(() => {});
-        }
-
-        console.log(`✅ Upgraded user ${uid} to ${subscriptionPlan}`);
-        break;
-      }
-
-      case 'customer.subscription.updated': {
-        const sub = event.data.object as Stripe.Subscription;
-        const uid = await env.APP_KV.get(`customer:${sub.customer}`);
-        if (!uid) break;
-
-        const statusMap: Record<string, string> = {
-          active: 'active',
-          past_due: 'past_due',
-          canceled: 'canceled',
-          unpaid: 'canceled',
-        };
-
-        await updateFirestoreUser(uid, {
-          subscriptionStatus: statusMap[sub.status] ?? 'none',
-          isPremium: sub.status === 'active',
-        }, env);
-        break;
-      }
-
-      case 'customer.subscription.deleted': {
-        const sub = event.data.object as Stripe.Subscription;
-        const uid = await env.APP_KV.get(`customer:${sub.customer}`);
-        if (!uid) break;
-
-        await updateFirestoreUser(uid, {
-          isPremium: false,
-          subscriptionPlan: 'free',
-          subscriptionStatus: 'canceled',
-        }, env);
-
-        console.log(`⬇️ Downgraded user ${uid} to free`);
-        break;
-      }
-
-      case 'invoice.payment_failed': {
-        const invoice = event.data.object as Stripe.Invoice;
-        const uid = await env.APP_KV.get(`customer:${invoice.customer}`);
-        if (!uid) break;
-        await updateFirestoreUser(uid, { subscriptionStatus: 'past_due' }, env);
-        break;
-      }
-    }
-  } catch (err: unknown) {
-    // Return 500 so Stripe retries — our handlers are idempotent (re-setting
-    // isPremium/plan is harmless), so a retry recovers from transient failures
-    // instead of silently leaving a paid user without premium.
-    console.error('Webhook handler error:', err);
-    return Response.json({ received: false }, { status: 500 });
-  }
-
-  return Response.json({ received: true });
-}
+// Wrap with Sentry so any unhandled exception in fetch/scheduled is reported.
+// No-op when SENTRY_DSN is unset (graceful before the owner wires it up).
+export default Sentry.withSentry(
+  (env: Env) => ({ dsn: env.SENTRY_DSN, tracesSampleRate: 0 }),
+  handler,
+);
 
 // ── Firestore REST helpers ────────────────────────────────────────────────────
 
@@ -550,6 +445,18 @@ async function getFirestoreToken(env: Env): Promise<string> {
     return cachedFirestoreToken.token;
   }
 
+  // Coalesce concurrent refreshes into one API call
+  if (pendingRefresh) return pendingRefresh;
+
+  pendingRefresh = performTokenRefresh(env).finally(() => {
+    pendingRefresh = null;
+  });
+  return pendingRefresh;
+}
+
+/** Internal: actually refresh the Firestore access token via service account JWT. */
+async function performTokenRefresh(env: Env): Promise<string> {
+  const now = Date.now();
   const iat = Math.floor(now / 1000);
   const exp = iat + 3600;
 
@@ -851,7 +758,7 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
   let user = await getFirestoreUser(uid, env);
   if (!user) {
     // Auto-create profile server-side so free users don't depend on client Firestore writes.
-    console.log(`[consume] auto-creating profile for ${uid} (${auth.email})`);
+    console.log(`[consume] auto-creating profile for uid=${uid}`);
     await updateFirestoreUser(uid, {
       uid,
       email: auth.email || '',
@@ -877,7 +784,7 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
   const usageCount = (user.usageCount as number) || 0;
   const limit = (PLAN_LIMITS[plan] ?? PLAN_LIMITS.free) + bonus;
 
-  console.log(`[consume] uid=${uid} email=${auth.email} plan=${plan} usage=${usageCount}/${limit}`);
+  console.log(`[consume] uid=${uid} plan=${plan} usage=${usageCount}/${limit}`);
 
   if (usageCount >= limit) {
     return Response.json({ allowed: false, reason: 'limit', usageCount, limit }, { status: 402 });
@@ -956,43 +863,7 @@ async function handleConsume(request: Request, env: Env): Promise<Response> {
   return Response.json({ allowed: true, usageCount: newUsageCount, limit });
 }
 
-// ── Billing Portal & Account Deletion ─────────────────────────────────────────
-
-/** Create a Stripe billing portal session so the user can manage/cancel their sub. */
-async function handleBillingPortal(request: Request, env: Env): Promise<Response> {
-  if (!env.STRIPE_SECRET_KEY) {
-    return Response.json({ error: 'Stripe not configured' }, { status: 500 });
-  }
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-
-  const user = await getFirestoreUser(auth.uid, env);
-  const customerId = user?.stripeCustomerId as string | undefined;
-  if (!customerId) {
-    return Response.json({ error: 'No subscription found' }, { status: 400 });
-  }
-
-  let body: { returnUrl?: string };
-  try { body = await request.json(); } catch { body = {}; }
-
-  // Validate returnUrl to prevent open redirects — uses shared ALLOWED_ORIGINS constant.
-  const safeReturnUrl = body.returnUrl &&
-    ALLOWED_ORIGINS.some(o => (body.returnUrl ?? '').startsWith(o))
-    ? body.returnUrl
-    : APP_ORIGIN + '/account';
-
-  const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-  try {
-    const session = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: safeReturnUrl,
-    });
-    return Response.json({ url: session.url });
-  } catch (err) {
-    console.error('Billing portal error:', err instanceof Error ? err.message : err);
-    return Response.json({ error: 'Could not open billing portal — please try again.' }, { status: 500 });
-  }
-}
+// ── Account Deletion ──────────────────────────────────────────────────────────
 
 /**
  * Delete the caller's own Firestore data (user doc + favorites/history subcollections)
@@ -1055,12 +926,8 @@ const ADMIN_EMAILS = ['darshan.p.hegde@gmail.com'];
  * Useful after testing to unblock yourself without touching the Firebase Console.
  */
 async function handleAdminResetUsage(request: Request, env: Env): Promise<Response> {
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-
-  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
-    return Response.json({ error: 'Forbidden' }, { status: 403 });
-  }
+  const auth = await requireAdmin(request, env);
+  if (auth instanceof Response) return auth;
 
   let body: { uid?: string } = {};
   try { body = await request.json(); } catch { /* empty body ok */ }
@@ -1163,8 +1030,8 @@ const ROOM_CODE_TTL = 4 * 60 * 60; // 4 hours in seconds
  * Generate a random room code. 4 chars from a 32-char alphabet = ~1M combinations.
  * Collisions are checked against KV before returning.
  */
-function generateRoomCode(): string {
-  const bytes = new Uint8Array(ROOM_CODE_LENGTH);
+function generateRoomCode(length: number = ROOM_CODE_LENGTH): string {
+  const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, b => ROOM_CODE_CHARS[b % ROOM_CODE_CHARS.length]).join('');
 }
@@ -1181,9 +1048,14 @@ function getISOWeek(date: Date): string {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 }
 
+/** Live sessions a free (non-premium) user may host per ISO week. Generous cap
+ *  to encourage usage while still preventing abuse (each session spins up a
+ *  Durable Object). Bump or set very high for effectively unlimited. */
+const FREE_WEEKLY_SESSION_LIMIT = 10;
+
 /**
  * POST /api/session/create — Create a new live session.
- * Requires Firebase auth. Enforces freemium limit (free users: 1 session/week).
+ * Requires Firebase auth. Enforces freemium limit (free users: FREE_WEEKLY_SESSION_LIMIT/week).
  * Returns { roomCode, hostToken }.
  */
 async function handleSessionCreate(request: Request, env: Env): Promise<Response> {
@@ -1191,7 +1063,7 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
   if (!auth) return unauthorized();
   const uid = auth.uid;
 
-  // Check freemium limit: free users get 1 session per ISO week
+  // Check freemium limit: free users get FREE_WEEKLY_SESSION_LIMIT sessions per ISO week
   const user = await getFirestoreUser(uid, env);
   const isPremium = (user?.isPremium as boolean) || false;
 
@@ -1199,9 +1071,9 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
     const week = getISOWeek(new Date());
     const limitKey = `session-limit:${uid}:${week}`;
     const count = parseInt((await env.APP_KV.get(limitKey)) ?? '0', 10);
-    if (count >= 1) {
+    if (count >= FREE_WEEKLY_SESSION_LIMIT) {
       return Response.json(
-        { error: 'Free users can host 1 live session per week. Upgrade for unlimited sessions.' },
+        { error: `You've hit this week's limit of ${FREE_WEEKLY_SESSION_LIMIT} live sessions. It resets next week.` },
         { status: 402 },
       );
     }
@@ -1209,14 +1081,26 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
     await env.APP_KV.put(limitKey, String(count + 1), { expirationTtl: 7 * 24 * 60 * 60 });
   }
 
-  // Generate a unique room code (retry on collision)
+  // Generate a unique room code (retry on collision).
+  // Try 10 times with standard 4-char codes, then fall back to 5-char codes.
   let roomCode = '';
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const candidate = generateRoomCode();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const candidate = generateRoomCode(ROOM_CODE_LENGTH);
     const existing = await env.APP_KV.get(`room:${candidate}`);
     if (!existing) {
       roomCode = candidate;
       break;
+    }
+  }
+  if (!roomCode) {
+    // Fallback: try 5-character codes (32^5 = ~33M combinations)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = generateRoomCode(ROOM_CODE_LENGTH + 1);
+      const existing = await env.APP_KV.get(`room:${candidate}`);
+      if (!existing) {
+        roomCode = candidate;
+        break;
+      }
     }
   }
   if (!roomCode) {
@@ -1242,16 +1126,21 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
   // Store room code → DO ID mapping in KV
   await env.APP_KV.put(`room:${roomCode}`, doId.toString(), { expirationTtl: ROOM_CODE_TTL });
 
-  console.log(`[session] created room=${roomCode} host=${uid} (${auth.email})`);
+  console.log(`[session] created room=${roomCode} host=${uid}`);
 
   // Store session history in Firestore (non-blocking)
   storeSessionHistory(env, uid, roomCode).catch(err => {
     console.error('Failed to store session history:', err);
   });
 
-  // Increment global stats counters (non-blocking)
-  incrementStat(env, 'stats:sessions_total').catch(() => {});
-  incrementStat(env, `daily:sessions:${new Date().toISOString().slice(0, 10)}`).catch(() => {});
+  // Increment global stats counters. Must be AWAITED — a fire-and-forget KV write
+  // in the Worker fetch handler gets cancelled when the response returns (unlike
+  // the DO, which stays alive). KV ops are fast; the small latency is worth a
+  // correct counter.
+  await Promise.all([
+    incrementStat(env, 'stats:sessions_total'),
+    incrementStat(env, `daily:sessions:${new Date().toISOString().slice(0, 10)}`),
+  ]).catch(() => { /* non-critical */ });
 
   return Response.json({ roomCode, hostToken });
 }
@@ -1261,10 +1150,20 @@ async function handleSessionCreate(request: Request, env: Env): Promise<Response
  * No auth required (guests need to verify the code before connecting).
  */
 async function handleSessionLookup(request: Request, env: Env): Promise<Response> {
+  // Rate limit: 10 lookups per IP per minute (prevents room code brute-force)
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const minute = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
+  const rlKey = `rl:lookup:${ip}:${minute}`;
+  const rlCount = parseInt((await env.APP_KV.get(rlKey)) ?? '0', 10);
+  if (rlCount >= 10) {
+    return Response.json({ error: 'Too many lookups. Try again in a minute.' }, { status: 429 });
+  }
+  await env.APP_KV.put(rlKey, String(rlCount + 1), { expirationTtl: 120 });
+
   const url = new URL(request.url);
   const code = (url.searchParams.get('code') || '').toUpperCase().trim();
 
-  if (!code || code.length !== ROOM_CODE_LENGTH) {
+  if (!code || code.length < ROOM_CODE_LENGTH || code.length > ROOM_CODE_LENGTH + 1) {
     return Response.json({ exists: false });
   }
 
@@ -1294,7 +1193,7 @@ async function handleSessionWebSocket(request: Request, env: Env): Promise<Respo
   const url = new URL(request.url);
   const code = (url.searchParams.get('code') || '').toUpperCase().trim();
 
-  if (!code || code.length !== ROOM_CODE_LENGTH) {
+  if (!code || code.length < ROOM_CODE_LENGTH || code.length > ROOM_CODE_LENGTH + 1) {
     return Response.json({ error: 'Invalid room code' }, { status: 400 });
   }
 
@@ -1311,8 +1210,16 @@ async function handleSessionWebSocket(request: Request, env: Env): Promise<Respo
   const doId = env.GAME_SESSIONS.idFromString(doIdStr);
   const stub = env.GAME_SESSIONS.get(doId);
 
-  // Forward the WebSocket upgrade request to the DO
-  return stub.fetch(request);
+  // Capture the player's country from Cloudflare's edge geo (only available at
+  // the HTTP layer, not inside the DO's WebSocket message handlers). Pass it to
+  // the DO via the URL so it can be counted per real player join.
+  const cf = (request as unknown as { cf?: { country?: string } }).cf;
+  const country = (cf?.country || request.headers.get('cf-ipcountry') || '').toUpperCase();
+  const fwdUrl = new URL(request.url);
+  if (/^[A-Z]{2}$/.test(country)) fwdUrl.searchParams.set('c', country);
+
+  // Forward the WebSocket upgrade request to the DO (preserving upgrade headers).
+  return stub.fetch(new Request(fwdUrl.toString(), request));
 }
 
 // ── Workers AI — "Surprise Me" question generation ────────────────────────────
@@ -1495,6 +1402,119 @@ async function handleFeedback(request: Request, env: Env): Promise<Response> {
   return Response.json({ ok: true });
 }
 
+/**
+ * POST /api/feedback-unlock — Signed-in users who hit their free limit can
+ * submit feedback in exchange for a one-time batch of free (bonus) questions.
+ * Stores the feedback, emails the owner, and credits the user's profile.
+ * Body: { text, rating? }
+ */
+const FEEDBACK_UNLOCK_BONUS = 25; // free questions granted per feedback (repeatable)
+// Anti-spam window between grants. NOTE: Cloudflare KV rejects expirationTtl < 60,
+// so this is the minimum possible cooldown (a 6s value silently failed to persist,
+// which disabled the cooldown entirely — infinite grant farming + email spam).
+const FEEDBACK_UNLOCK_COOLDOWN_SEC = 60;
+
+async function handleFeedbackUnlock(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyIdToken(request, env);
+  if (!auth) return unauthorized();
+
+  let body: { text?: string; rating?: number };
+  try {
+    body = await request.json() as typeof body;
+  } catch {
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const text = (body.text || '').trim().slice(0, 1000);
+  if (text.length < 3) {
+    return Response.json({ error: 'Please share a little more feedback.' }, { status: 400 });
+  }
+  const rating = typeof body.rating === 'number' ? Math.min(5, Math.max(1, body.rating)) : null;
+
+  // Repeatable unlock: every piece of feedback grants another batch of questions
+  // ("more feedback, more questions"). A short per-user cooldown blocks accidental
+  // double-submits / button-mashing the same feedback, without adding real friction.
+  const cooldownKey = `rl:fbunlock:${auth.uid}`;
+  const onCooldown = !!(await env.APP_KV.get(cooldownKey).catch(() => null));
+
+  let currentBonus = 0;
+  try {
+    const profile = await getFirestoreUser(auth.uid, env);
+    currentBonus = typeof profile?.bonusQuestions === 'number' ? profile.bonusQuestions as number : 0;
+  } catch (err) {
+    console.error('feedback-unlock: profile read failed', err);
+  }
+
+  let granted = 0;
+  let newBonus = currentBonus;
+  if (!onCooldown) {
+    granted = FEEDBACK_UNLOCK_BONUS;
+    newBonus = currentBonus + granted;
+    try {
+      await updateFirestoreUser(auth.uid, { bonusQuestions: newBonus }, env);
+      // Log put failures instead of swallowing them — a silent failure here is
+      // exactly how the cooldown was disabled before (TTL < 60 rejected by KV).
+      await env.APP_KV.put(cooldownKey, '1', { expirationTtl: FEEDBACK_UNLOCK_COOLDOWN_SEC })
+        .catch((e) => console.error('feedback-unlock: cooldown put failed', e));
+    } catch (err) {
+      console.error('feedback-unlock: grant failed', err);
+      return Response.json({ error: 'Could not apply your free questions — please try again.' }, { status: 500 });
+    }
+  }
+
+  // Store the feedback (best-effort) so it shows up in the admin dashboard.
+  try {
+    const token = await getFirestoreToken(env);
+    const docId = crypto.randomUUID();
+    const dbPath = `projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents/feedback/${docId}`;
+    const fields: Record<string, unknown> = {
+      text: { stringValue: text },
+      createdAt: { timestampValue: new Date().toISOString() },
+      source: { stringValue: 'limit-unlock' },
+      uid: { stringValue: auth.uid },
+    };
+    if (rating) fields.rating = { integerValue: String(rating) };
+    if (auth.email) fields.email = { stringValue: auth.email };
+    await fetch(`https://firestore.googleapis.com/v1/${dbPath}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+    });
+  } catch (err) {
+    console.error('feedback-unlock: store failed', err);
+  }
+
+  // Email the owner (best-effort).
+  if (env.RESEND_API_KEY) {
+    try {
+      const subject = `[DTC Feedback] ${rating ? '★'.repeat(rating) : 'New'} (limit unlock) — ${text.slice(0, 50)}`;
+      const htmlBody = `
+        <h2>New Feedback (free-questions unlock)</h2>
+        <p><strong>Rating:</strong> ${rating ? '★'.repeat(rating) + '☆'.repeat(5 - rating) : 'Not rated'}</p>
+        <p><strong>Message:</strong></p>
+        <blockquote style="border-left:3px solid #5A5A40;padding-left:12px;color:#333;">${text}</blockquote>
+        ${auth.email ? `<p><strong>From:</strong> <a href="mailto:${auth.email}">${auth.email}</a></p>` : ''}
+        <p><strong>Granted:</strong> ${granted} free questions ${onCooldown ? '(cooldown — none added)' : ''}</p>
+        <p style="color:#999;font-size:12px;">uid: ${auth.uid} | ${new Date().toISOString()}</p>
+      `;
+      await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: env.RESEND_FROM || 'Dinner Table Cards <noreply@dinnertablecards.xyz>',
+          to: 'contentcreatordarsh@gmail.com',
+          subject,
+          html: htmlBody,
+        }),
+      });
+    } catch (err) {
+      console.error('feedback-unlock: email failed', err);
+    }
+  }
+
+  return Response.json({ ok: true, granted, bonusQuestions: newBonus, onCooldown });
+}
+
 // ── Stats endpoint ───────────────────────────────────────────────────────────
 
 /**
@@ -1502,22 +1522,158 @@ async function handleFeedback(request: Request, env: Env): Promise<Response> {
  * Returns aggregate counters from KV.
  */
 async function handleStats(env: Env): Promise<Response> {
-  const [sessions, players, questions] = await Promise.all([
+  const [sessions, players, questions, playSeconds, playCount] = await Promise.all([
     env.APP_KV.get('stats:sessions_total'),
     env.APP_KV.get('stats:players_total'),
     env.APP_KV.get('stats:questions_total'),
+    env.APP_KV.get('stats:play_seconds_total'),
+    env.APP_KV.get('stats:play_count'),
   ]);
 
+  // Average playing time across real, completed sessions (null until we have data).
+  const pSecs = parseInt(playSeconds ?? '0', 10);
+  const pCount = parseInt(playCount ?? '0', 10);
+  const avgPlaySeconds = pCount > 0 ? Math.round(pSecs / pCount) : null;
+
+  // Aggregate per-country join counts: prefix-scan KV, then batch-read values.
+  // Eventually consistent + slightly costly, so the 60s cache below covers it.
+  let countries: { code: string; count: number }[] = [];
+  try {
+    const list = await env.APP_KV.list({ prefix: 'stats:country:' });
+    const PREFIX = 'stats:country:';
+    const entries = await Promise.all(
+      list.keys.map(async (k) => ({
+        code: k.name.slice(PREFIX.length),
+        count: parseInt((await env.APP_KV.get(k.name)) ?? '0', 10),
+      })),
+    );
+    countries = entries
+      .filter(e => /^[A-Z]{2}$/.test(e.code) && e.count > 0)
+      .sort((a, b) => b.count - a.count);
+  } catch { /* non-critical — return totals without country breakdown */ }
+
   return Response.json({
-    sessions: parseInt(sessions ?? '0', 10) + 50,   // seed with baseline
-    players: parseInt(players ?? '0', 10) + 200,    // seed with baseline
-    questions: parseInt(questions ?? '0', 10) + 600, // seed with baseline (question bank)
+    // Real, un-seeded counts — auto-increment as people actually use the app.
+    sessions: parseInt(sessions ?? '0', 10),
+    players: parseInt(players ?? '0', 10),
+    questions: parseInt(questions ?? '0', 10),
+    avgPlaySeconds,
+    countries,
+    topCountry: countries[0]?.code ?? null,
   }, {
     headers: { 'Cache-Control': 'public, max-age=60' }, // cache 1 min
   });
 }
 
-/** Atomically increment a KV counter. */
+/** Escape a string for safe interpolation into HTML text / double-quoted attributes. */
+function escapeHtmlAttr(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * GET /q?t=<question>[&c=<category>] — Per-question share landing with dynamic
+ * Open Graph / Twitter Card meta so Facebook, LinkedIn, iMessage, Slack, etc.
+ * (which ignore pre-filled share text) render the actual question in their link
+ * preview. Humans get a branded card with a CTA into the app.
+ */
+function handleQuestionShare(url: URL): Response {
+  const raw = (url.searchParams.get('t') || '').slice(0, 300).trim();
+  const category = (url.searchParams.get('c') || '').slice(0, 40).trim();
+  const APP = 'https://dinnertablecards.xyz';
+
+  // Fallback to the generic landing if no question was supplied.
+  const question = raw || 'What question will spark your best conversation tonight?';
+  const q = escapeHtmlAttr(question);
+  const cat = category && /^[\w &'-]+$/.test(category) ? escapeHtmlAttr(category) : '';
+  const shareUrl = `${APP}/q?t=${encodeURIComponent(question)}${cat ? `&c=${encodeURIComponent(category)}` : ''}`;
+  const desc = 'A free conversation starter from Dinner Table Cards — 600+ curated questions for dinners, dates & teams.';
+
+  const html = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>${q} · Dinner Table Cards</title>
+<meta name="description" content="${escapeHtmlAttr(desc)}">
+<link rel="canonical" href="${escapeHtmlAttr(shareUrl)}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Dinner Table Cards">
+<meta property="og:url" content="${escapeHtmlAttr(shareUrl)}">
+<meta property="og:title" content="${q}">
+<meta property="og:description" content="${escapeHtmlAttr(desc)}">
+<meta property="og:image" content="${APP}/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${q}">
+<meta name="twitter:description" content="${escapeHtmlAttr(desc)}">
+<meta name="twitter:image" content="${APP}/og-image.png">
+<style>
+  :root{color-scheme:light}
+  *{margin:0;box-sizing:border-box}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#F5F2ED;color:#1A1A1A;font-family:Georgia,'Times New Roman',serif;padding:2rem;text-align:center}
+  .wrap{max-width:34rem}
+  .kicker{font-size:.7rem;letter-spacing:.4em;text-transform:uppercase;color:rgba(26,26,26,.4);font-family:system-ui,sans-serif;margin-bottom:1.5rem}
+  .cat{font-size:.65rem;letter-spacing:.25em;text-transform:uppercase;color:#5A5A40;font-family:system-ui,sans-serif;margin-bottom:1rem}
+  h1{font-style:italic;font-weight:400;font-size:2rem;line-height:1.35;margin-bottom:2.25rem}
+  @media(min-width:640px){h1{font-size:2.5rem}}
+  .cta{display:inline-block;background:#5A5A40;color:#F5F2ED;text-decoration:none;font-family:system-ui,sans-serif;font-size:.7rem;letter-spacing:.25em;text-transform:uppercase;padding:.9rem 2rem;border-radius:999px;transition:background .2s}
+  .cta:hover{background:#4A4A34}
+  .foot{margin-top:2rem;font-family:system-ui,sans-serif;font-size:.7rem;color:rgba(26,26,26,.35)}
+</style>
+</head><body>
+  <main class="wrap">
+    <p class="kicker">Dinner&nbsp;Table&nbsp;Cards</p>
+    ${cat ? `<p class="cat">${cat}</p>` : ''}
+    <h1>&ldquo;${q}&rdquo;</h1>
+    <a class="cta" href="${APP}/">Get your own free question →</a>
+    <p class="foot">600+ curated conversation starters · dinnertablecards.xyz</p>
+  </main>
+</body></html>`;
+
+  return new Response(html, {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=3600',
+    },
+  });
+}
+
+/**
+ * Rewrites the SPA index.html's social meta on the fly so a given route gets a
+ * route-specific Open Graph / Twitter Card preview. HTMLRewriter encodes the
+ * values it sets (attribute + text), so no manual escaping is required.
+ */
+function injectOpenGraph(
+  response: Response,
+  meta: { title: string; description: string; url: string },
+): Response {
+  const setMeta = {
+    element(el: Element) {
+      const key = el.getAttribute('property') ?? el.getAttribute('name');
+      if (key === 'og:title' || key === 'twitter:title') el.setAttribute('content', meta.title);
+      else if (key === 'og:description' || key === 'twitter:description' || key === 'description') {
+        el.setAttribute('content', meta.description);
+      } else if (key === 'og:url') el.setAttribute('content', meta.url);
+    },
+  };
+  const setTitle = {
+    element(el: Element) {
+      el.setInnerContent(`${meta.title} · Dinner Table Cards`);
+    },
+  };
+  return new HTMLRewriter().on('meta', setMeta).on('title', setTitle).transform(response);
+}
+
+/**
+ * Increment a KV counter.
+ * NOTE: KV does not support atomic CAS — concurrent requests can lose increments.
+ * Acceptable for approximate analytics counters; rate-limit checks use conservative
+ * thresholds to compensate (see individual rate-limit callsites).
+ */
 async function incrementStat(env: Env, key: string): Promise<void> {
   const current = parseInt((await env.APP_KV.get(key)) ?? '0', 10);
   await env.APP_KV.put(key, String(current + 1));
@@ -1525,73 +1681,203 @@ async function incrementStat(env: Env, key: string): Promise<void> {
 
 // ── Admin Dashboard endpoints ─────────────────────────────────────────────────
 
+/** Read every value under a KV prefix (parsed as int), sorted desc by count. */
+async function kvPrefixCounts(env: Env, prefix: string): Promise<{ key: string; count: number }[]> {
+  const list = await env.APP_KV.list({ prefix });
+  const entries = await Promise.all(
+    list.keys.map(async (k) => ({
+      key: k.name.slice(prefix.length),
+      count: parseInt((await env.APP_KV.get(k.name)) ?? '0', 10),
+    })),
+  );
+  return entries.filter((e) => e.count > 0).sort((a, b) => b.count - a.count);
+}
+
 /**
- * GET /api/admin/dashboard-stats — Admin-only. Returns overview metrics.
- * Includes KV counters + daily breakdown (last 7 days from KV).
+ * GET /api/admin/dashboard-stats — Admin-only. Rich analytics payload:
+ * lifetime counters, derived engagement ratios, 14-day trend, geography,
+ * category popularity, crowd question-vote leaderboards (the signal for tuning
+ * prompts), feedback rating distribution, and registered-user / usage stats.
  */
 async function handleAdminDashboardStats(request: Request, env: Env): Promise<Response> {
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
-    return Response.json({ error: 'Forbidden' }, { status: 403 });
-  }
+  const admin = await requireAdmin(request, env);
+  if (admin instanceof Response) return admin;
 
-  // Fetch aggregate counters
-  const [sessions, players, questions] = await Promise.all([
+  const int = (v: string | null) => parseInt(v ?? '0', 10);
+
+  // ── Lifetime KV counters ──────────────────────────────────────────────────
+  const [sessions, players, questions, playSeconds, playCount] = await Promise.all([
     env.APP_KV.get('stats:sessions_total'),
     env.APP_KV.get('stats:players_total'),
     env.APP_KV.get('stats:questions_total'),
+    env.APP_KV.get('stats:play_seconds_total'),
+    env.APP_KV.get('stats:play_count'),
   ]);
+  const sN = int(sessions), pN = int(players), qN = int(questions);
+  const pSecs = int(playSeconds), pCnt = int(playCount);
 
-  // Fetch daily breakdown (last 7 days)
-  const daily: { date: string; sessions: number; players: number; questions: number }[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(Date.now() - i * 86400000);
-    const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
-    const [ds, dp, dq] = await Promise.all([
-      env.APP_KV.get(`daily:sessions:${key}`),
-      env.APP_KV.get(`daily:players:${key}`),
-      env.APP_KV.get(`daily:questions:${key}`),
-    ]);
-    daily.push({
-      date: key,
-      sessions: parseInt(ds ?? '0', 10),
-      players: parseInt(dp ?? '0', 10),
-      questions: parseInt(dq ?? '0', 10),
-    });
+  // ── 14-day daily trend ────────────────────────────────────────────────────
+  const dailyKeys: string[] = [];
+  for (let i = 13; i >= 0; i--) dailyKeys.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+  const daily = await Promise.all(
+    dailyKeys.map(async (key) => {
+      const [ds, dp, dq] = await Promise.all([
+        env.APP_KV.get(`daily:sessions:${key}`),
+        env.APP_KV.get(`daily:players:${key}`),
+        env.APP_KV.get(`daily:questions:${key}`),
+      ]);
+      return { date: key, sessions: int(ds), players: int(dp), questions: int(dq) };
+    }),
+  );
+
+  // ── Geography + category popularity (prefix scans) ────────────────────────
+  let countries: { code: string; count: number }[] = [];
+  let categories: { name: string; count: number }[] = [];
+  try {
+    countries = (await kvPrefixCounts(env, 'stats:country:'))
+      .filter((e) => /^[A-Z]{2}$/.test(e.key))
+      .map((e) => ({ code: e.key, count: e.count }));
+  } catch { /* non-critical */ }
+  try {
+    categories = (await kvPrefixCounts(env, 'stats:category:')).map((e) => ({ name: e.key, count: e.count }));
+  } catch { /* non-critical */ }
+
+  // ── Crowd question votes (qvote:* in KV) — the prompt-tuning signal ────────
+  const questionVotes = {
+    totalUp: 0,
+    totalDown: 0,
+    totalRated: 0,
+    topLiked: [] as { text: string; up: number; down: number }[],
+    topDisliked: [] as { text: string; up: number; down: number }[],
+  };
+  try {
+    const list = await env.APP_KV.list({ prefix: 'qvote:' });
+    const rows = (
+      await Promise.all(
+        list.keys.map(async (k) => {
+          const raw = await env.APP_KV.get(k.name);
+          if (!raw) return null;
+          try {
+            const v = JSON.parse(raw) as { up?: number; down?: number; text?: string };
+            return { text: v.text ?? '', up: v.up ?? 0, down: v.down ?? 0 };
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter((r): r is { text: string; up: number; down: number } => !!r && (r.up > 0 || r.down > 0));
+    questionVotes.totalRated = rows.length;
+    questionVotes.totalUp = rows.reduce((a, r) => a + r.up, 0);
+    questionVotes.totalDown = rows.reduce((a, r) => a + r.down, 0);
+    questionVotes.topLiked = [...rows]
+      .filter((r) => r.up > 0)
+      .sort((a, b) => b.up - b.down - (a.up - a.down) || b.up - a.up)
+      .slice(0, 10);
+    questionVotes.topDisliked = [...rows]
+      .filter((r) => r.down > 0)
+      .sort((a, b) => b.down - b.up - (a.down - a.up) || b.down - a.down)
+      .slice(0, 10);
+  } catch (err) {
+    console.error('qvote aggregation failed:', err);
   }
 
-  // Count feedback docs (query Firestore for total count)
-  let feedbackCount = 0;
+  // ── Firestore: feedback rating distribution + registered-user/usage stats ──
+  const feedback = { total: 0, ratedCount: 0, avgRating: null as number | null, distribution: [0, 0, 0, 0, 0] };
+  const users = { total: 0, sampled: 0, active: 0, premium: 0, hitFreeLimit: 0, avgUsage: 0, freeLimit: PLAN_LIMITS.free };
   try {
     const token = await getFirestoreToken(env);
     const baseUrl = `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/${env.FIREBASE_DATABASE_ID}/documents`;
-    const queryRes = await fetch(`${baseUrl}:runAggregationQuery`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        structuredAggregationQuery: {
-          structuredQuery: { from: [{ collectionId: 'feedback' }] },
-          aggregations: [{ alias: 'count', count: {} }],
-        },
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    // Counts (cheap aggregation queries).
+    const [fbCountRes, userCountRes, fbDocsRes, userDocsRes] = await Promise.all([
+      fetch(`${baseUrl}:runAggregationQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredAggregationQuery: { structuredQuery: { from: [{ collectionId: 'feedback' }] }, aggregations: [{ alias: 'c', count: {} }] } }),
       }),
-    });
-    if (queryRes.ok) {
-      const results = await queryRes.json() as Array<{ result?: { aggregateFields?: { count?: { integerValue?: string } } } }>;
-      feedbackCount = parseInt(results?.[0]?.result?.aggregateFields?.count?.integerValue ?? '0', 10);
+      fetch(`${baseUrl}:runAggregationQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredAggregationQuery: { structuredQuery: { from: [{ collectionId: 'users' }] }, aggregations: [{ alias: 'c', count: {} }] } }),
+      }),
+      // Rating distribution (feedback is low-volume; sample up to 1000).
+      fetch(`${baseUrl}:runQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'feedback' }], select: { fields: [{ fieldPath: 'rating' }] }, limit: 1000 } }),
+      }),
+      // Usage sample (cap reads at 500).
+      fetch(`${baseUrl}:runQuery`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'users' }], select: { fields: [{ fieldPath: 'usageCount' }, { fieldPath: 'isPremium' }] }, limit: 500 } }),
+      }),
+    ]);
+
+    if (fbCountRes.ok) {
+      const r = await fbCountRes.json() as Array<{ result?: { aggregateFields?: { c?: { integerValue?: string } } } }>;
+      feedback.total = int(r?.[0]?.result?.aggregateFields?.c?.integerValue ?? '0');
+    }
+    if (userCountRes.ok) {
+      const r = await userCountRes.json() as Array<{ result?: { aggregateFields?: { c?: { integerValue?: string } } } }>;
+      users.total = int(r?.[0]?.result?.aggregateFields?.c?.integerValue ?? '0');
+    }
+    if (fbDocsRes.ok) {
+      const docs = await fbDocsRes.json() as Array<{ document?: { fields?: { rating?: { integerValue?: string } } } }>;
+      for (const d of docs) {
+        const rt = d.document?.fields?.rating?.integerValue;
+        if (rt) {
+          const n = parseInt(rt, 10);
+          if (n >= 1 && n <= 5) { feedback.distribution[n - 1]++; feedback.ratedCount++; }
+        }
+      }
+      if (feedback.ratedCount > 0) {
+        const sum = feedback.distribution.reduce((a, c, i) => a + c * (i + 1), 0);
+        feedback.avgRating = Math.round((sum / feedback.ratedCount) * 10) / 10;
+      }
+    }
+    if (userDocsRes.ok) {
+      const docs = await userDocsRes.json() as Array<{ document?: { fields?: { usageCount?: { integerValue?: string }; isPremium?: { booleanValue?: boolean } } } }>;
+      let usageSum = 0;
+      for (const d of docs) {
+        const f = d.document?.fields;
+        if (!f) continue;
+        users.sampled++;
+        const u = int(f.usageCount?.integerValue ?? '0');
+        usageSum += u;
+        if (u > 0) users.active++;
+        if (f.isPremium?.booleanValue) users.premium++;
+        if (u >= PLAN_LIMITS.free) users.hitFreeLimit++;
+      }
+      users.avgUsage = users.sampled > 0 ? Math.round((usageSum / users.sampled) * 10) / 10 : 0;
     }
   } catch (err) {
-    console.error('Failed to count feedback:', err);
+    console.error('Firestore analytics failed:', err);
   }
 
+  // ── Derived engagement ratios ─────────────────────────────────────────────
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const engagement = {
+    avgPlaySeconds: pCnt > 0 ? Math.round(pSecs / pCnt) : null,
+    avgPlayersPerSession: sN > 0 ? round1(pN / sN) : null,
+    avgQuestionsPerSession: sN > 0 ? round1(qN / sN) : null,
+    completionRate: sN > 0 ? Math.round((pCnt / sN) * 100) : null, // % of sessions that finished a round
+  };
+
   return Response.json({
+    generatedAt: new Date().toISOString(),
     totals: {
-      sessions: parseInt(sessions ?? '0', 10),
-      players: parseInt(players ?? '0', 10),
-      questions: parseInt(questions ?? '0', 10),
-      feedback: feedbackCount,
+      sessions: sN,
+      players: pN,
+      questions: qN,
+      feedback: feedback.total,
+      registeredUsers: users.total,
+      completedSessions: pCnt,
     },
+    engagement,
     daily,
+    countries,
+    categories,
+    questionVotes,
+    feedback,
+    users,
   });
 }
 
@@ -1600,11 +1886,8 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
  * Query param: ?limit=20 (default 20, max 50)
  */
 async function handleAdminFeedbackList(request: Request, env: Env): Promise<Response> {
-  const auth = await verifyIdToken(request, env);
-  if (!auth) return unauthorized();
-  if (!ADMIN_EMAILS.includes(auth.email ?? '')) {
-    return Response.json({ error: 'Forbidden' }, { status: 403 });
-  }
+  const admin = await requireAdmin(request, env);
+  if (admin instanceof Response) return admin;
 
   const url = new URL(request.url);
   const limit = Math.min(50, parseInt(url.searchParams.get('limit') || '20', 10));

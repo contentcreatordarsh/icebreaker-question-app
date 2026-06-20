@@ -1,0 +1,22 @@
+# Dinner Table Cards
+
+> Beautiful, curated conversation-starter question cards for dinner parties, dates,
+> and team meetings - plus a free, no-signup live multiplayer game. 600+ icebreaker
+> and deep-talk questions across categories and topics.
+
+## Key pages
+- [Home](https://dinnertablecards.xyz/): Browse question packs and the daily question
+- [Play a live session](https://dinnertablecards.xyz/play): Join or host a Kahoot-style conversation game
+- [Privacy Policy](https://dinnertablecards.xyz/privacy)
+- [Terms of Service](https://dinnertablecards.xyz/terms)
+
+## Usage policy
+- You may cite or quote our questions with attribution and a link to https://dinnertablecards.xyz.
+- AI *training* crawlers are not permitted (see /robots.txt).
+- AI *search and assistant* crawlers that drive referral traffic are welcome to index
+  public pages.
+- Do not crawl: /account, /admin, /host/, /sessions, /api/ (private, auth-gated, or ephemeral).
+
+## Contact
+- contentcreatordarsh@gmail.com
+- https://x.com/hegdedarsh

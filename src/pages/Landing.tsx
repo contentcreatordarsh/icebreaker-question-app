@@ -1,10 +1,12 @@
 import { Link } from 'react-router-dom';
-import { Heart, Zap, BookOpen, ArrowRight, Lock, Star, ChevronDown, Users, MessageSquare, Sparkles } from 'lucide-react';
+import { Heart, Zap, BookOpen, ArrowRight, Star, ChevronDown, Users, MessageSquare, Sparkles } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { motion, useInView } from 'motion/react';
 import Logo from '../components/Logo';
 import { fadeUp, staggerContainer, pop } from '../lib/animations';
 import TrustSignals from '../components/TrustSignals';
+import WorldStats from '../components/WorldStats';
+import { TOPICS } from '../data/topics';
 
 interface LandingProps {
   onSignIn: () => void;
@@ -25,29 +27,30 @@ const PREMIUM_CATEGORIES = [
   { name: 'Creative Sparks', emoji: '🎨', tagline: '63 imaginative what-ifs', desc: 'Open new ways of thinking together.' },
 ];
 
-const TESTIMONIALS = [
+// Honest use-case framing (not fabricated testimonials).
+const USE_CASES = [
   {
-    quote: "We use it every team lunch. The deep-talk ones always catch someone off guard — in the best way.",
-    who: "Engineering team, 11 people",
+    title: "At the dinner table",
+    body: "Replace 'how was your day?' with a question that actually goes somewhere — and watch everyone put their phones down.",
   },
   {
-    quote: "Finally something better than 'how was your weekend?' at dinner parties. My guests actually stayed to talk.",
-    who: "Couple, 4 years together",
+    title: "On a date",
+    body: "Skip the small talk. Find out what makes someone tick before the mains even arrive.",
   },
   {
-    quote: "My family of 5 has a rule now — one question per Sunday dinner. It changed everything.",
-    who: "Parent of three, Chicago",
+    title: "With the team",
+    body: "Real connection without the forced-fun cringe. Deep-talk prompts that make a lunch worth remembering.",
   },
 ];
 
 const FAQ_ITEMS = [
   {
-    q: "What happens when I hit 25 free questions?",
-    a: "You'll see an upgrade prompt. There's no expiry — your saved favorites stay yours forever.",
+    q: "Is it really free?",
+    a: "Yes — completely. Every category, topic, the AI 'Surprise Me', and the live game. There's no paid plan and no card, ever.",
   },
   {
-    q: "Can I cancel my subscription anytime?",
-    a: "Yes. Two clicks from your account page. No dark patterns, no retention flow, no guilt.",
+    q: "What happens when I run low on questions?",
+    a: "Share one quick thought and we'll unlock 25 more — instantly. The more feedback you give, the more you get. Your feedback is literally what shapes what we build next.",
   },
   {
     q: "What's the difference between Light and Deep questions?",
@@ -55,7 +58,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "Will I see the same questions twice?",
-    a: "Occasionally — the archive has 600+ questions, but popular categories cycle. Premium unlocks the full depth so repeats are rare.",
+    a: "Occasionally — the archive has 600+ questions across categories and topics, and the AI 'Surprise Me' generates fresh ones on demand, so repeats are rare.",
   },
   {
     q: "Does it work without internet?",
@@ -72,13 +75,21 @@ export default function Landing({ onSignIn }: LandingProps) {
 
   return (
     <div className="editorial-container min-h-screen">
+      {/* Skip-to-content link — visible only on keyboard focus */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-brand focus:px-4 focus:py-2 focus:text-paper focus:text-xs"
+      >
+        Skip to content
+      </a>
+
       {/* Masthead */}
       <header className="border-b border-brand/10 px-6 py-5 md:px-12 md:py-8 w-full">
         <div className="max-w-6xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
             <Logo size={36} className="text-brand" />
             <div>
-              <span className="caps-tracking opacity-30 block text-[9px] mb-0.5">Vol. I · Est. 2024</span>
+              <span className="caps-tracking opacity-30 block text-[9px] mb-0.5">Vol. 2026</span>
               <h1 className="font-serif text-xl md:text-2xl italic tracking-tight">
                 Dinner Table Cards
               </h1>
@@ -96,7 +107,7 @@ export default function Landing({ onSignIn }: LandingProps) {
         </div>
       </header>
 
-      <main className="flex-grow w-full max-w-6xl mx-auto px-6 md:px-12">
+      <main id="main-content" className="flex-grow w-full max-w-6xl mx-auto px-6 md:px-12">
 
         {/* ── Hero ─────────────────────────────────────────────────────────── */}
         <section className="py-14 md:py-20 grid md:grid-cols-2 gap-12 md:gap-16 items-center border-b border-brand/10">
@@ -130,18 +141,18 @@ export default function Landing({ onSignIn }: LandingProps) {
               </Link>
             </motion.div>
             {/* Trust signals */}
-            <motion.div variants={fadeUp} className="flex items-center gap-6 mt-6 pt-6 border-t border-brand/5">
-              <div className="flex items-center gap-1.5">
-                <Users size={12} className="opacity-40" />
-                <span className="text-[10px] caps-tracking opacity-40">500+ players joined</span>
-              </div>
+            <motion.div variants={fadeUp} className="flex flex-wrap items-center gap-x-6 gap-y-2 mt-6 pt-6 border-t border-brand/5">
               <div className="flex items-center gap-1.5">
                 <MessageSquare size={12} className="opacity-40" />
-                <span className="text-[10px] caps-tracking opacity-40">600+ questions</span>
+                <span className="text-[10px] caps-tracking opacity-40">1,000+ questions</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Users size={12} className="opacity-40" />
+                <span className="text-[10px] caps-tracking opacity-40">Live multiplayer sessions</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <Star size={10} className="opacity-40 fill-current" />
-                <span className="text-[10px] caps-tracking opacity-40">4.9 rating</span>
+                <span className="text-[10px] caps-tracking opacity-40">Free · works offline</span>
               </div>
             </motion.div>
           </motion.div>
@@ -179,8 +190,11 @@ export default function Landing({ onSignIn }: LandingProps) {
           </div>
         </section>
 
-        {/* ── Live Trust Signals (dynamic counters) ─────────────────────── */}
+        {/* ── Live Trust Signals (real, dynamic counters) ───────────────── */}
         <TrustSignals />
+        <div className="-mt-2 pb-6 flex justify-center">
+          <WorldStats variant="strip" />
+        </div>
 
         {/* ── How it works ─────────────────────────────────────────────────── */}
         <section id="how-it-works" className="py-14 md:py-16 border-b border-brand/10">
@@ -225,18 +239,18 @@ export default function Landing({ onSignIn }: LandingProps) {
           </div>
         </section>
 
-        {/* ── Premium category teaser ──────────────────────────────────────── */}
+        {/* ── Deeper categories (all free) ─────────────────────────────────── */}
         <section className="py-14 md:py-16 border-b border-brand/10">
           <div className="flex items-baseline gap-4 mb-2">
-            <span className="caps-tracking opacity-40">Go deeper with Premium</span>
+            <span className="caps-tracking opacity-40">Go deeper</span>
             <span className="h-[1px] flex-grow bg-brand/10" />
             <span className="caps-tracking opacity-30 flex items-center gap-1.5">
-              <Star size={10} className="fill-accent/40 text-accent/40" /> From $2 / month
+              <Star size={10} className="fill-accent/40 text-accent/40" /> Always free
             </span>
           </div>
           <p className="text-sm opacity-50 mb-8 max-w-lg">
-            The free tier covers the basics. Upgrade to unlock 3 deeper categories, 500 questions/month,
-            and curated packs for specific occasions.
+            Beyond the icebreakers — richer categories for when the table&rsquo;s ready to go further.
+            Every one is free to explore.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
             {PREMIUM_CATEGORIES.map(cat => (
@@ -249,110 +263,76 @@ export default function Landing({ onSignIn }: LandingProps) {
                 <h3 className="font-serif text-lg italic mb-1 group-hover:text-accent transition-colors">{cat.name}</h3>
                 <p className="text-xs caps-tracking opacity-40 mb-3">{cat.tagline}</p>
                 <p className="text-sm opacity-55 leading-relaxed mb-5">{cat.desc}</p>
-                <span className="inline-flex items-center gap-1.5 caps-tracking text-[10px] opacity-40 group-hover:opacity-80 transition-opacity">
-                  <Lock size={9} /> Premium only
+                <span className="inline-flex items-center gap-1.5 caps-tracking text-[10px] text-accent opacity-60 group-hover:opacity-100 transition-opacity">
+                  Free to explore &rarr;
                 </span>
               </div>
             ))}
           </div>
         </section>
 
-        {/* ── Social proof ─────────────────────────────────────────────────── */}
+        {/* ── Topics showcase ──────────────────────────────────────────────── */}
         <section className="py-14 md:py-16 border-b border-brand/10">
-          <span className="caps-tracking opacity-40 block mb-8">What people are saying</span>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {TESTIMONIALS.map((t, i) => (
-              <div key={i} className="border border-brand/10 p-8 hover:border-brand/20 transition-colors">
-                <p className="font-serif text-lg italic leading-relaxed text-brand mb-5">
-                  "{t.quote}"
+          <span className="caps-tracking opacity-40 block mb-2 text-accent">New · Explore by topic</span>
+          <h2 className="font-serif text-2xl md:text-3xl italic text-brand mb-3">
+            Conversations about what you actually love
+          </h2>
+          <p className="text-sm opacity-50 mb-8 max-w-lg">
+            Beyond the classics — dive into Sports, Movies, Music, and more, each with its own
+            sub-topics. Free to explore.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {TOPICS.map(g => (
+              <div
+                key={g.id}
+                onClick={onSignIn}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter') onSignIn(); }}
+                className="border border-brand/10 p-5 hover:border-brand/25 transition-colors cursor-pointer"
+              >
+                <span className="text-2xl mb-3 block" aria-hidden>{g.emoji}</span>
+                <h3 className="font-serif text-base italic mb-2 text-brand">{g.label}</h3>
+                <p className="text-[11px] caps-tracking opacity-40 leading-relaxed">
+                  {g.children.map(c => c.label).join(' · ')}
                 </p>
-                <span className="caps-tracking text-[10px] opacity-40">— {t.who}</span>
               </div>
             ))}
           </div>
         </section>
 
-        {/* ── Pricing ──────────────────────────────────────────────────────── */}
+        {/* ── Live: around the world (real Cloudflare edge-geo) ────────────── */}
+        <WorldStats variant="section" />
+
+        {/* ── Made for these moments ───────────────────────────────────────── */}
         <section className="py-14 md:py-16 border-b border-brand/10">
-          <span className="caps-tracking opacity-40 block mb-2">Plans</span>
-          <p className="text-sm opacity-50 mb-8">Less than a coffee. Cancel in two clicks.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-
-            {/* Free */}
-            <div className="border border-brand/10 p-8 space-y-4">
-              <div>
-                <span className="caps-tracking opacity-40">Free</span>
-                <p className="font-serif text-4xl italic mt-1">$0</p>
-                <p className="text-sm opacity-50 mt-1">forever</p>
+          <span className="caps-tracking opacity-40 block mb-8">Made for these moments</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {USE_CASES.map((u, i) => (
+              <div key={i} className="border border-brand/10 p-8 hover:border-brand/20 transition-colors">
+                <h3 className="font-serif text-xl italic text-brand mb-3">{u.title}</h3>
+                <p className="text-sm leading-relaxed opacity-60">{u.body}</p>
               </div>
-              <ul className="space-y-2 text-sm opacity-70">
-                {['4 categories', 'Daily questions', '25 questions to start'].map(f => (
-                  <li key={f} className="flex items-center gap-2">
-                    <span className="w-1 h-1 rounded-full bg-brand/40 flex-shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={onSignIn}
-                className="w-full caps-tracking border border-brand/20 py-3 hover:bg-brand hover:text-paper transition-all mt-4"
-              >
-                Get started
-              </button>
-            </div>
-
-            {/* Monthly */}
-            <div className="border-2 border-brand p-8 space-y-4 relative">
-              <span className="absolute top-4 right-4 text-[9px] caps-tracking bg-brand text-paper px-2 py-1">
-                Most popular
-              </span>
-              <div>
-                <span className="caps-tracking opacity-40">Monthly</span>
-                <p className="font-serif text-4xl italic mt-1">$3</p>
-                <p className="text-sm opacity-50 mt-1">per month</p>
-              </div>
-              <ul className="space-y-2 text-sm opacity-70">
-                {['All 7 categories', 'Curated packs', '100 questions/month', 'Favorites & history'].map(f => (
-                  <li key={f} className="flex items-center gap-2">
-                    <span className="w-1 h-1 rounded-full bg-brand/60 flex-shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={onSignIn}
-                className="w-full caps-tracking bg-brand text-paper py-3 hover:bg-opacity-90 transition-all mt-4"
-              >
-                Start monthly
-              </button>
-            </div>
-
-            {/* Yearly */}
-            <div className="border border-brand/10 p-8 space-y-4 relative">
-              <span className="absolute top-4 right-4 text-[9px] caps-tracking bg-accent/10 text-accent px-2 py-1">
-                Save 33%
-              </span>
-              <div>
-                <span className="caps-tracking opacity-40">Yearly</span>
-                <p className="font-serif text-4xl italic mt-1">$2</p>
-                <p className="text-sm opacity-50 mt-1">per month · billed $24/yr</p>
-              </div>
-              <ul className="space-y-2 text-sm opacity-70">
-                {['Everything in Monthly', '500 questions/month', 'AI-generated questions', 'Early feature access'].map(f => (
-                  <li key={f} className="flex items-center gap-2">
-                    <span className="w-1 h-1 rounded-full bg-brand/40 flex-shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={onSignIn}
-                className="w-full caps-tracking border border-brand/20 py-3 hover:bg-brand hover:text-paper transition-all mt-4"
-              >
-                Save with yearly
-              </button>
-            </div>
+            ))}
           </div>
+        </section>
+
+        {/* ── Always free ──────────────────────────────────────────────────── */}
+        <section className="py-14 md:py-16 border-b border-brand/10">
+          <span className="caps-tracking opacity-40 block mb-2">The price</span>
+          <h2 className="font-serif text-3xl md:text-4xl italic text-brand mb-4">It&rsquo;s free. All of it.</h2>
+          <p className="text-sm opacity-55 max-w-xl mb-8 leading-relaxed">
+            Every category, every topic, the AI &ldquo;Surprise Me,&rdquo; and the live multiplayer
+            game — no paywall, no card, ever. If you reach a pause point, just share one quick
+            thought and we&rsquo;ll unlock 25 more questions. The more feedback you give, the more
+            you get — that&rsquo;s how we keep making it better.
+          </p>
+          <button
+            onClick={onSignIn}
+            className="caps-tracking bg-brand text-paper px-8 py-3.5 hover:bg-opacity-90 transition-all"
+          >
+            Start free — it&rsquo;s all yours
+          </button>
         </section>
 
         {/* ── FAQ ──────────────────────────────────────────────────────────── */}
@@ -409,7 +389,7 @@ export default function Landing({ onSignIn }: LandingProps) {
             </button>
           </div>
           <p className="text-[10px] caps-tracking opacity-35 mt-4">
-            1 free session per week &middot; Unlimited with Premium
+            Host up to 10 live sessions per week &middot; free
           </p>
         </section>
 
@@ -420,8 +400,8 @@ export default function Landing({ onSignIn }: LandingProps) {
             What will you ask tonight?
           </h2>
           <p className="text-sm opacity-50 mb-8 max-w-sm mx-auto">
-            25 free questions to get you started. No card, no catch.
-            Upgrade any time for the full archive.
+            Free to start, free to keep going. No card, no catch — just share a
+            little feedback to unlock more.
           </p>
           <button
             onClick={onSignIn}
@@ -430,7 +410,7 @@ export default function Landing({ onSignIn }: LandingProps) {
             Sign in with Google — It's free <ArrowRight size={12} />
           </button>
           <p className="text-[10px] caps-tracking opacity-40 mt-5">
-            Secure · No spam · Cancel premium anytime
+            Secure · No spam · 100% free
           </p>
         </section>
       </main>

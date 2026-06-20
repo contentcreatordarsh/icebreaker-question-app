@@ -67,6 +67,12 @@ export interface UserProfile {
   referredBy?: string;
   referralCount?: number;
   bonusQuestions?: number;
+  feedbackRewarded?: boolean;
+  // Payment provider linkage (written server-side by webhooks)
+  paymentProvider?: 'stripe' | 'lemonsqueezy';
+  stripeCustomerId?: string;
+  lsCustomerId?: string;
+  lsSubscriptionId?: string;
 }
 
 // ── Live Session (Kahoot-style game) ────────────────────────────────────────
@@ -120,7 +126,7 @@ export interface GameState {
 /** Client → Server message types */
 export type GameClientMessage =
   | { type: 'join'; name: string; hostToken?: string; gender?: PlayerGender; avatar?: string }
-  | { type: 'start_question'; text: string; timerSec?: number }
+  | { type: 'start_question'; text: string; timerSec?: number; category?: string }
   | { type: 'submit_answer'; answer: string }
   | { type: 'reveal_next' }
   | { type: 'reveal_all' }

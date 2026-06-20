@@ -1,0 +1,36 @@
+;; ============================================================================
+;; Security DNS records for dinnertablecards.xyz
+;; ----------------------------------------------------------------------------
+;; HOW TO APPLY (one click): Cloudflare dashboard -> DNS -> Records ->
+;;   "Import and Export" -> Import DNS records -> upload this file.
+;; Or add each record manually (DNS -> Records -> Add record).
+;; TTL "1" = "Automatic" in Cloudflare. Review every record before importing.
+;; ============================================================================
+
+;; --- DMARC: stops others from spoofing email "from" your domain. ------------
+;; Starts in MONITOR mode (p=none) so nothing breaks. After ~1 week of clean
+;; aggregate reports, tighten p=none -> p=quarantine -> p=reject.
+_dmarc.dinnertablecards.xyz. 1 IN TXT "v=DMARC1; p=none; rua=mailto:contentcreatordarsh@gmail.com; ruf=mailto:contentcreatordarsh@gmail.com; fo=1"
+
+;; --- CAA: only these CAs may issue TLS certs for your domain. ----------------
+;; Cloudflare issues via Let's Encrypt and Google Trust Services.
+dinnertablecards.xyz. 1 IN CAA 0 issue "letsencrypt.org"
+dinnertablecards.xyz. 1 IN CAA 0 issue "pki.goog"
+dinnertablecards.xyz. 1 IN CAA 0 issuewild "letsencrypt.org"
+dinnertablecards.xyz. 1 IN CAA 0 issuewild "pki.goog"
+dinnertablecards.xyz. 1 IN CAA 0 iodef "mailto:contentcreatordarsh@gmail.com"
+
+;; --- SPF + DKIM: REQUIRED for email auth, but values come from Resend. -------
+;; Do NOT guess these. In Resend -> Domains, add dinnertablecards.xyz; Resend
+;; shows the exact SPF (TXT), DKIM (TXT/CNAME), and (if used) MX records to add.
+;; A typical Resend SPF looks like the line below — CONFIRM in Resend first:
+;; dinnertablecards.xyz. 1 IN TXT "v=spf1 include:_spf.resend.com ~all"
+
+;; ============================================================================
+;; Dashboard-only items (cannot be set via DNS — toggle in Cloudflare UI):
+;;   * DNSSEC:            DNS -> Settings -> Enable DNSSEC (paste DS at registrar)
+;;   * SSL/TLS:           Overview -> Full (strict); Min TLS 1.2; Always Use HTTPS
+;;   * Super Bot Fight:   Security -> Bots -> Verified bots = ALLOW
+;;   * WAF Managed Rules: Security -> WAF -> deploy Managed + OWASP rulesets
+;;   * Rate limiting:     Security -> WAF -> /api/ > 60 req/min/IP -> challenge
+;; ============================================================================
