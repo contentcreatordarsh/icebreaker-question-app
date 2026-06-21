@@ -26,6 +26,7 @@ interface Env {
   // Cloudflare GraphQL Analytics (optional — admin dashboard "Platform Scale" panel).
   // Token: wrangler secret put CLOUDFLARE_ANALYTICS_TOKEN (needs Account/Zone Analytics:Read).
   CLOUDFLARE_ANALYTICS_TOKEN?: string;
+  analytics?: string;            // fallback secret name (in case it was set as `analytics`)
   CLOUDFLARE_ZONE_ID?: string;   // set in wrangler.toml [vars]; the zone is public-ish, not a secret
   // (ADMIN_SECRET removed — admin routes now require a Firebase ID token from an admin email)
 }
@@ -1714,7 +1715,8 @@ interface CloudflareAnalytics {
  * Returns null (panel hidden) when the token/zone aren't configured or on error.
  */
 async function fetchCloudflareAnalytics(env: Env): Promise<CloudflareAnalytics | null> {
-  if (!env.CLOUDFLARE_ANALYTICS_TOKEN || !env.CLOUDFLARE_ZONE_ID) return null;
+  const token = env.CLOUDFLARE_ANALYTICS_TOKEN || env.analytics;
+  if (!token || !env.CLOUDFLARE_ZONE_ID) return null;
   const HOUR = 3_600_000;
   const alignHour = (ms: number) => new Date(Math.floor(ms / HOUR) * HOUR).toISOString();
   const now = Date.now();
@@ -1734,7 +1736,7 @@ async function fetchCloudflareAnalytics(env: Env): Promise<CloudflareAnalytics |
   try {
     const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${env.CLOUDFLARE_ANALYTICS_TOKEN}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, variables: { zoneTag: env.CLOUDFLARE_ZONE_ID, since, until, prevSince } }),
     });
     if (!res.ok) { console.error('CF analytics HTTP', res.status, await res.text()); return null; }
