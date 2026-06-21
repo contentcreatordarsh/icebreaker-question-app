@@ -27,6 +27,7 @@ import { TOPICS } from './data/topics';
 import { pickTopicQuestion } from './data/questions';
 import { PLANS } from './constants';
 import { cn } from './lib/utils';
+import { track, initDwellTracking } from './lib/track';
 import Landing from './pages/Landing';
 
 /** Derive a stable, URL-safe referral code from a Firebase UID. */
@@ -98,6 +99,12 @@ export default function App() {
         if (snap.exists()) setUserProfile(snap.data() as UserProfile);
       }
     } catch { /* give up silently */ }
+  }, []);
+
+  // Visitor analytics: record the home-page landing + start the dwell timer once.
+  useEffect(() => {
+    track('home');
+    initDwellTracking();
   }, []);
 
   useEffect(() => {
@@ -241,6 +248,7 @@ export default function App() {
   }, []);
 
   const handleShuffle = useCallback(() => {
+    track('question');
     setActivePack(null);
     // If a topic is active, re-pick from that topic pool instead of the daily bank.
     if (activeTopicLeaf) {
@@ -253,6 +261,7 @@ export default function App() {
 
   // ── Topic handlers ───────────────────────────────────────────────────────────
   const handleSelectTopic = useCallback((leafId: string) => {
+    track('question');
     setActivePack(null);
     setCategory('Icebreaker'); // neutral, non-premium category for the gate
     setActiveTopicLeaf(leafId);

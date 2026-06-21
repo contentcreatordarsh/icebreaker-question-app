@@ -5,6 +5,7 @@ import {
   ChevronLeft, RefreshCw, Users, Zap, MessageSquare, Star, TrendingUp,
   Clock, ThumbsUp, ThumbsDown, Globe, Tags, UserCheck, Crown, Gauge, Activity,
   Cloud, Server, MapPin, ArrowUpRight, ArrowDownRight,
+  Filter, Smartphone, Monitor, Tablet, Timer, MousePointerClick,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { auth, authedGet } from '../lib/firebase';
@@ -34,6 +35,11 @@ interface DashboardStats {
   questionVotes: { totalUp: number; totalDown: number; totalRated: number; topLiked: VoteRow[]; topDisliked: VoteRow[] };
   feedback: { total: number; ratedCount: number; avgRating: number | null; distribution: number[] };
   users: { total: number; sampled: number; active: number; premium: number; hitFreeLimit: number; avgUsage: number; freeLimit: number };
+  funnel: {
+    home: number; play: number; host: number; question: number;
+    avgDwellSeconds: number | null; dwellSamples: number;
+  };
+  device: { os: { name: string; count: number }[]; form: { name: string; count: number }[] };
   cloudflare: {
     requests24h: number;
     prevRequests24h: number;
@@ -176,6 +182,9 @@ export default function AdminDashboard() {
 
             {/* ── Platform Scale (Cloudflare edge metrics) ──────────────── */}
             {stats.cloudflare && <CloudflarePanel cf={stats.cloudflare} />}
+
+            {/* ── Visitor funnel + devices ──────────────────────────────── */}
+            {stats.funnel && <FunnelPanel funnel={stats.funnel} device={stats.device} />}
 
             {/* ── Engagement / quality ratios ───────────────────────────── */}
             <Panel icon={Gauge} title="Engagement & Quality">
@@ -363,6 +372,140 @@ function CloudflarePanel({ cf }: { cf: NonNullable<DashboardStats['cloudflare']>
           <BarList items={cf.topCountries.map((c) => ({ label: `${codeToFlag(c.code)} ${codeToName(c.code)}`, count: c.requests }))} />
         </div>
       )}
+    </motion.div>
+  );
+}
+
+function FunnelPanel({ funnel, device }: {
+  funnel: NonNullable<DashboardStats['funnel']>; device: DashboardStats['device'];
+}) {
+  const home = funnel.home || 0;
+  // Conversion steps, in the order a visitor flows through the product. These are
+  // independent actions off the home page (not strictly nested), so each bar is
+  // "% of visitors who reached the home page".
+  const steps = [
+    { icon: MessageSquare, label: 'Tried a question', count: funnel.question, hint: 'drew or picked a question' },
+    { icon: MousePointerClick, label: 'Started a session', count: funnel.play, hint: 'opened the live-session page' },
+    { icon: Server, label: 'Hosted a session', count: funnel.host, hint: 'created a live room' },
+  ];
+  const conv = (n: number) => (home > 0 ? Math.round((n / home) * 100) : 0);
+
+  const osIcon = (name: string) => (name === 'ios' || name === 'android' ? Smartphone : Monitor);
+  const formIcon = (name: string) => (name === 'mobile' ? Smartphone : name === 'tablet' ? Tablet : Monitor);
+  const cap = (s: string) => ({ ios: 'iOS', macos: 'macOS', os: 'Other' }[s] ?? s.charAt(0).toUpperCase() + s.slice(1));
+  const totalForm = device.form.reduce((a, f) => a + f.count, 0);
+
+  return (
+    <motion.div
+      variants={fadeUp} initial="hidden" animate="visible"
+      className="mb-6 rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50/70 to-white p-6 shadow-sm"
+    >
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Filter size={15} className="text-indigo-600" />
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A]/60">Visitor Funnel</h2>
+        </div>
+        <span className="text-[10px] uppercase tracking-wider text-[#1A1A1A]/30">where visitors drop off · lifetime</span>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+        {/* Funnel bars */}
+        <div>
+          {/* Top of funnel — all visitors */}
+          <div className="mb-3">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-[#1A1A1A]/70">
+                <Users size={13} className="text-indigo-500" /> Visited home
+              </span>
+              <span className="text-xs font-semibold text-[#1A1A1A]/60 tabular-nums">{home.toLocaleString()} · 100%</span>
+            </div>
+            <div className="h-3 w-full rounded-full bg-indigo-500" />
+          </div>
+          {steps.map((s) => {
+            const pct = conv(s.count);
+            const dropoff = 100 - pct;
+            return (
+              <div key={s.label} className="mb-3 last:mb-0">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-[#1A1A1A]/70" title={s.hint}>
+                    <s.icon size={13} className="text-indigo-400" /> {s.label}
+                  </span>
+                  <span className="text-xs tabular-nums text-[#1A1A1A]/60">
+                    <span className="font-semibold">{s.count.toLocaleString()}</span>
+                    <span className="ml-1.5 text-indigo-600">{pct}%</span>
+                    {home > 0 && <span className="ml-1.5 text-red-400">↓{dropoff}%</span>}
+                  </span>
+                </div>
+                <div className="h-3 w-full rounded-full bg-[#1A1A1A]/5">
+                  <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-indigo-400" style={{ width: `${Math.max(pct, 1)}%` }} />
+                </div>
+              </div>
+            );
+          })}
+          {home === 0 && (
+            <p className="mt-3 text-xs italic text-[#1A1A1A]/40" style={{ fontFamily: 'Georgia, serif' }}>
+              No visits recorded yet — data starts flowing as people land on the site.
+            </p>
+          )}
+        </div>
+
+        {/* Time on site + devices */}
+        <div className="space-y-5">
+          <div className="rounded-lg border border-indigo-100 bg-white/60 p-4">
+            <div className="mb-1 flex items-center gap-1.5 text-[#1A1A1A]/40">
+              <Timer size={12} /><span className="text-[10px] uppercase tracking-wider">Avg. time on site</span>
+            </div>
+            <p className="text-2xl font-bold text-[#1A1A1A] tabular-nums">{fmtDuration(funnel.avgDwellSeconds)}</p>
+            <p className="mt-0.5 text-[11px] text-[#1A1A1A]/35">{funnel.dwellSamples.toLocaleString()} sessions measured</p>
+          </div>
+
+          <div>
+            <p className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[#1A1A1A]/35">
+              <Smartphone size={11} /> Device type
+            </p>
+            {device.form.length === 0 ? (
+              <Empty>No device data yet.</Empty>
+            ) : (
+              <div className="space-y-2">
+                {device.form.map((f) => {
+                  const Icon = formIcon(f.name);
+                  const p = totalForm > 0 ? Math.round((f.count / totalForm) * 100) : 0;
+                  return (
+                    <div key={f.name} className="flex items-center gap-2 text-xs">
+                      <Icon size={13} className="shrink-0 text-indigo-400" />
+                      <span className="w-16 shrink-0 text-[#1A1A1A]/70">{cap(f.name)}</span>
+                      <div className="h-2 flex-1 rounded-full bg-[#1A1A1A]/5">
+                        <div className="h-full rounded-full bg-indigo-400" style={{ width: `${p}%` }} />
+                      </div>
+                      <span className="w-14 shrink-0 text-right tabular-nums text-[#1A1A1A]/55">{f.count.toLocaleString()} · {p}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {device.os.length > 0 && (
+            <div>
+              <p className="mb-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[#1A1A1A]/35">
+                <Monitor size={11} /> Operating system
+              </p>
+              <div className="space-y-1.5">
+                {device.os.map((o) => {
+                  const Icon = osIcon(o.name);
+                  return (
+                    <div key={o.name} className="flex items-center gap-2 text-xs text-[#1A1A1A]/60">
+                      <Icon size={12} className="shrink-0 text-indigo-300" />
+                      <span className="flex-1">{cap(o.name)}</span>
+                      <span className="tabular-nums">{o.count.toLocaleString()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </motion.div>
   );
 }

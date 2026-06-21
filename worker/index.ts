@@ -306,6 +306,11 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return handleStats(env);
   }
 
+  // ── Visitor funnel + device beacon (anonymous, fire-and-forget) ────────────
+  if (url.pathname === '/api/track' && request.method === 'POST') {
+    return handleTrack(request, env);
+  }
+
   // ── Per-question share page (dynamic Open Graph) ───────────────────────────
   // Facebook/LinkedIn ignore pre-filled share text and build their preview from
   // the shared URL's OG tags. Sharing /q?t=<question> serves a page whose OG
@@ -1679,9 +1684,68 @@ function injectOpenGraph(
  * Acceptable for approximate analytics counters; rate-limit checks use conservative
  * thresholds to compensate (see individual rate-limit callsites).
  */
-async function incrementStat(env: Env, key: string): Promise<void> {
+async function incrementStat(env: Env, key: string, by = 1): Promise<void> {
   const current = parseInt((await env.APP_KV.get(key)) ?? '0', 10);
-  await env.APP_KV.put(key, String(current + 1));
+  await env.APP_KV.put(key, String(current + by));
+}
+
+// ── Visitor funnel + device analytics (anonymous, no auth) ──────────────────
+// Allow-lists guard against KV key injection: only these exact values ever
+// become part of a KV key. Anything else is silently dropped.
+const TRACK_EVENTS = new Set(['home', 'play', 'host', 'question', 'dwell']);
+const TRACK_OS = new Set(['ios', 'android', 'windows', 'macos', 'linux', 'other']);
+const TRACK_FORM = new Set(['mobile', 'desktop', 'tablet']);
+
+/**
+ * POST /api/track — fire-and-forget visitor analytics beacon (sendBeacon).
+ * Records funnel-step counters (home → play/host/question), session dwell time,
+ * and device/OS breakdown. Anonymous: no body field is ever stored verbatim —
+ * every value is checked against an allow-list before it touches a KV key.
+ * Always returns 204 (the client never reads the response).
+ */
+async function handleTrack(request: Request, env: Env): Promise<Response> {
+  // Rate limit: 60 beacons per IP per minute (a real visitor fires a handful).
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const minute = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
+  const rlKey = `rl:track:${ip}:${minute}`;
+  const rlCount = parseInt((await env.APP_KV.get(rlKey)) ?? '0', 10);
+  if (rlCount >= 60) return new Response(null, { status: 204 });
+  await env.APP_KV.put(rlKey, String(rlCount + 1), { expirationTtl: 120 });
+
+  let body: { event?: string; dwellMs?: number; os?: string; form?: string };
+  try {
+    body = await request.json() as typeof body;
+  } catch {
+    return new Response(null, { status: 204 });
+  }
+
+  const event = String(body.event || '');
+  if (!TRACK_EVENTS.has(event)) return new Response(null, { status: 204 });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const ops: Promise<unknown>[] = [];
+
+  if (event === 'dwell') {
+    // Accumulate total dwell seconds + sample count → avg time on site.
+    const ms = typeof body.dwellMs === 'number' ? body.dwellMs : 0;
+    if (ms >= 1000 && ms <= 6 * 3_600_000) {
+      ops.push(incrementStat(env, 'stats:dwell_seconds_total', Math.round(ms / 1000)));
+      ops.push(incrementStat(env, 'stats:dwell_count'));
+    }
+  } else {
+    ops.push(incrementStat(env, `stats:funnel:${event}`));
+    ops.push(incrementStat(env, `daily:funnel:${event}:${today}`));
+    // Count device once per visitor — only on the entry ("home") event.
+    if (event === 'home') {
+      const os = String(body.os || '');
+      const form = String(body.form || '');
+      if (TRACK_OS.has(os)) ops.push(incrementStat(env, `stats:device:os:${os}`));
+      if (TRACK_FORM.has(form)) ops.push(incrementStat(env, `stats:device:form:${form}`));
+    }
+  }
+
+  await Promise.all(ops).catch(() => { /* non-critical */ });
+  return new Response(null, { status: 204 });
 }
 
 // ── Admin Dashboard endpoints ─────────────────────────────────────────────────
@@ -1953,6 +2017,30 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
     completionRate: sN > 0 ? Math.round((pCnt / sN) * 100) : null, // % of sessions that finished a round
   };
 
+  // ── Visitor funnel + device + dwell (anonymous beacon analytics) ──────────
+  const [fHome, fPlay, fHost, fQuestion, dwellSecs, dwellCnt] = await Promise.all([
+    env.APP_KV.get('stats:funnel:home'),
+    env.APP_KV.get('stats:funnel:play'),
+    env.APP_KV.get('stats:funnel:host'),
+    env.APP_KV.get('stats:funnel:question'),
+    env.APP_KV.get('stats:dwell_seconds_total'),
+    env.APP_KV.get('stats:dwell_count'),
+  ]);
+  let deviceOs: { name: string; count: number }[] = [];
+  let deviceForm: { name: string; count: number }[] = [];
+  try { deviceOs = (await kvPrefixCounts(env, 'stats:device:os:')).map((e) => ({ name: e.key, count: e.count })); } catch { /* non-critical */ }
+  try { deviceForm = (await kvPrefixCounts(env, 'stats:device:form:')).map((e) => ({ name: e.key, count: e.count })); } catch { /* non-critical */ }
+  const dCnt = int(dwellCnt);
+  const funnel = {
+    home: int(fHome),
+    play: int(fPlay),
+    host: int(fHost),
+    question: int(fQuestion),
+    avgDwellSeconds: dCnt > 0 ? Math.round(int(dwellSecs) / dCnt) : null,
+    dwellSamples: dCnt,
+  };
+  const device = { os: deviceOs, form: deviceForm };
+
   // ── Cloudflare edge platform metrics (best-effort; null when unconfigured) ──
   const cloudflare = await fetchCloudflareAnalytics(env).catch(() => null);
 
@@ -1973,6 +2061,8 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
     questionVotes,
     feedback,
     users,
+    funnel,
+    device,
     cloudflare,
   });
 }
