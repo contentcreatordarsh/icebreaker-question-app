@@ -27,6 +27,11 @@ FIREBASE_DATABASE_ID = "ai-studio-ce545956-aa8d-4e12-9ad5-c58ab798d709"
 # Email (Resend) — replace with a verified sender from your Resend domain.
 # Uses onboarding@resend.dev (test-only) until RESEND_FROM is set.
 RESEND_FROM = "Dinner Table Cards <onboarding@resend.dev>"
+# Cloudflare GraphQL Analytics — powers the admin "Platform Scale" panel.
+# Zone ID is on the Cloudflare dashboard Overview page (right sidebar). Not secret.
+# The companion token is a SECRET: wrangler secret put CLOUDFLARE_ANALYTICS_TOKEN
+# (create at My Profile → API Tokens with permission "Account Analytics: Read").
+CLOUDFLARE_ZONE_ID = "9a5f263a806147a332f7d3b63add80f2"
 
 # Workers AI — powers "Surprise Me" on-demand question generation (free tier)
 [ai]

@@ -5,6 +5,7 @@ import { cn } from '../lib/utils';
 import CreateSessionButton, { PENDING_HOST_KEY } from '../components/game/CreateSessionButton';
 import { useCreateSession } from '../components/game/useCreateSession';
 import { auth, signInWithGoogle } from '../lib/firebase';
+import { track } from '../lib/track';
 import { useAuthState } from 'react-firebase-hooks/auth';
 import AvatarPicker, { getDefaultAvatar } from '../components/game/AvatarPicker';
 import type { PlayerGender } from '../types';
@@ -30,6 +31,9 @@ export default function Play() {
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const fullCode = code.join('');
+
+  // Visitor analytics: reaching /play is the "start a live session" funnel step.
+  useEffect(() => { track('play'); }, []);
 
   // Resume a "host a session" intent after a Google sign-in redirect. The host
   // click happens while signed out, which triggers a full-page redirect to

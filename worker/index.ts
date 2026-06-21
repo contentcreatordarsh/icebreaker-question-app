@@ -23,6 +23,11 @@ interface Env {
   RESEND_FROM?: string;   // e.g. "Dinner Table Cards <noreply@yourdomain.com>"
   // Error monitoring (optional — no-op when unset). Set via `wrangler secret put SENTRY_DSN`.
   SENTRY_DSN?: string;
+  // Cloudflare GraphQL Analytics (optional — admin dashboard "Platform Scale" panel).
+  // Token: wrangler secret put CLOUDFLARE_ANALYTICS_TOKEN (needs Account/Zone Analytics:Read).
+  CLOUDFLARE_ANALYTICS_TOKEN?: string;
+  analytics?: string;            // fallback secret name (in case it was set as `analytics`)
+  CLOUDFLARE_ZONE_ID?: string;   // set in wrangler.toml [vars]; the zone is public-ish, not a secret
   // (ADMIN_SECRET removed — admin routes now require a Firebase ID token from an admin email)
 }
 
@@ -299,6 +304,11 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   // ── Public stats endpoint ──────────────────────────────────────────────────
   if (url.pathname === '/api/stats' && request.method === 'GET') {
     return handleStats(env);
+  }
+
+  // ── Visitor funnel + device beacon (anonymous, fire-and-forget) ────────────
+  if (url.pathname === '/api/track' && request.method === 'POST') {
+    return handleTrack(request, env);
   }
 
   // ── Per-question share page (dynamic Open Graph) ───────────────────────────
@@ -1674,9 +1684,68 @@ function injectOpenGraph(
  * Acceptable for approximate analytics counters; rate-limit checks use conservative
  * thresholds to compensate (see individual rate-limit callsites).
  */
-async function incrementStat(env: Env, key: string): Promise<void> {
+async function incrementStat(env: Env, key: string, by = 1): Promise<void> {
   const current = parseInt((await env.APP_KV.get(key)) ?? '0', 10);
-  await env.APP_KV.put(key, String(current + 1));
+  await env.APP_KV.put(key, String(current + by));
+}
+
+// ── Visitor funnel + device analytics (anonymous, no auth) ──────────────────
+// Allow-lists guard against KV key injection: only these exact values ever
+// become part of a KV key. Anything else is silently dropped.
+const TRACK_EVENTS = new Set(['home', 'play', 'host', 'question', 'dwell']);
+const TRACK_OS = new Set(['ios', 'android', 'windows', 'macos', 'linux', 'other']);
+const TRACK_FORM = new Set(['mobile', 'desktop', 'tablet']);
+
+/**
+ * POST /api/track — fire-and-forget visitor analytics beacon (sendBeacon).
+ * Records funnel-step counters (home → play/host/question), session dwell time,
+ * and device/OS breakdown. Anonymous: no body field is ever stored verbatim —
+ * every value is checked against an allow-list before it touches a KV key.
+ * Always returns 204 (the client never reads the response).
+ */
+async function handleTrack(request: Request, env: Env): Promise<Response> {
+  // Rate limit: 60 beacons per IP per minute (a real visitor fires a handful).
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const minute = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
+  const rlKey = `rl:track:${ip}:${minute}`;
+  const rlCount = parseInt((await env.APP_KV.get(rlKey)) ?? '0', 10);
+  if (rlCount >= 60) return new Response(null, { status: 204 });
+  await env.APP_KV.put(rlKey, String(rlCount + 1), { expirationTtl: 120 });
+
+  let body: { event?: string; dwellMs?: number; os?: string; form?: string };
+  try {
+    body = await request.json() as typeof body;
+  } catch {
+    return new Response(null, { status: 204 });
+  }
+
+  const event = String(body.event || '');
+  if (!TRACK_EVENTS.has(event)) return new Response(null, { status: 204 });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const ops: Promise<unknown>[] = [];
+
+  if (event === 'dwell') {
+    // Accumulate total dwell seconds + sample count → avg time on site.
+    const ms = typeof body.dwellMs === 'number' ? body.dwellMs : 0;
+    if (ms >= 1000 && ms <= 6 * 3_600_000) {
+      ops.push(incrementStat(env, 'stats:dwell_seconds_total', Math.round(ms / 1000)));
+      ops.push(incrementStat(env, 'stats:dwell_count'));
+    }
+  } else {
+    ops.push(incrementStat(env, `stats:funnel:${event}`));
+    ops.push(incrementStat(env, `daily:funnel:${event}:${today}`));
+    // Count device once per visitor — only on the entry ("home") event.
+    if (event === 'home') {
+      const os = String(body.os || '');
+      const form = String(body.form || '');
+      if (TRACK_OS.has(os)) ops.push(incrementStat(env, `stats:device:os:${os}`));
+      if (TRACK_FORM.has(form)) ops.push(incrementStat(env, `stats:device:form:${form}`));
+    }
+  }
+
+  await Promise.all(ops).catch(() => { /* non-critical */ });
+  return new Response(null, { status: 204 });
 }
 
 // ── Admin Dashboard endpoints ─────────────────────────────────────────────────
@@ -1693,11 +1762,98 @@ async function kvPrefixCounts(env: Env, prefix: string): Promise<{ key: string; 
   return entries.filter((e) => e.count > 0).sort((a, b) => b.count - a.count);
 }
 
+interface CloudflareAnalytics {
+  requests24h: number;
+  prevRequests24h: number;
+  growthPct: number | null;
+  countriesReached: number;
+  topCountries: { code: string; requests: number }[];
+  peakHour: { hour: string; requests: number } | null;
+  hourly: { hour: string; requests: number }[];
+}
+
+/**
+ * Pull edge-level platform stats from Cloudflare's GraphQL Analytics API:
+ * total HTTP/Worker requests over the last 24h (and the prior 24h for growth),
+ * a per-country breakdown, and an hourly series (for the peak hour + sparkline).
+ * Returns null (panel hidden) when the token/zone aren't configured or on error.
+ */
+async function fetchCloudflareAnalytics(env: Env): Promise<CloudflareAnalytics | null> {
+  const token = env.CLOUDFLARE_ANALYTICS_TOKEN || env.analytics;
+  if (!token || !env.CLOUDFLARE_ZONE_ID) return null;
+  const HOUR = 3_600_000;
+  const alignHour = (ms: number) => new Date(Math.floor(ms / HOUR) * HOUR).toISOString();
+  const now = Date.now();
+  const until = alignHour(now + HOUR);   // up to the current hour bucket
+  const since = alignHour(now - 24 * HOUR);
+  const prevSince = alignHour(now - 48 * HOUR);
+
+  const query = `query($zoneTag:String!,$since:Time!,$until:Time!,$prevSince:Time!){
+    viewer{zones(filter:{zoneTag:$zoneTag}){
+      hourly:httpRequests1hGroups(limit:48,filter:{datetime_geq:$since,datetime_lt:$until},orderBy:[datetime_ASC]){
+        dimensions{datetime} sum{requests countryMap{clientCountryName requests}}
+      }
+      prev:httpRequests1hGroups(limit:48,filter:{datetime_geq:$prevSince,datetime_lt:$since}){ sum{requests} }
+    }}
+  }`;
+
+  try {
+    const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables: { zoneTag: env.CLOUDFLARE_ZONE_ID, since, until, prevSince } }),
+    });
+    if (!res.ok) { console.error('CF analytics HTTP', res.status, await res.text()); return null; }
+    const json = await res.json() as {
+      errors?: unknown[];
+      data?: { viewer?: { zones?: Array<{
+        hourly?: Array<{ dimensions: { datetime: string }; sum: { requests: number; countryMap?: Array<{ clientCountryName: string; requests: number }> } }>;
+        prev?: Array<{ sum: { requests: number } }>;
+      }> } };
+    };
+    if (json.errors?.length) { console.error('CF analytics GraphQL errors', JSON.stringify(json.errors)); return null; }
+    const zone = json.data?.viewer?.zones?.[0];
+    if (!zone) return null;
+
+    const hourly: { hour: string; requests: number }[] = [];
+    const countryReq: Record<string, number> = {};
+    let total = 0;
+    for (const h of zone.hourly ?? []) {
+      const reqs = h.sum?.requests ?? 0;
+      total += reqs;
+      hourly.push({ hour: h.dimensions.datetime, requests: reqs });
+      for (const c of h.sum?.countryMap ?? []) {
+        if (c.clientCountryName) countryReq[c.clientCountryName] = (countryReq[c.clientCountryName] ?? 0) + c.requests;
+      }
+    }
+    const prevTotal = (zone.prev ?? []).reduce((a, h) => a + (h.sum?.requests ?? 0), 0);
+    const topCountries = Object.entries(countryReq)
+      .map(([code, requests]) => ({ code, requests }))
+      .sort((a, b) => b.requests - a.requests);
+    const peak = hourly.reduce<{ hour: string; requests: number } | null>(
+      (best, b) => (!best || b.requests > best.requests ? b : best), null);
+
+    return {
+      requests24h: total,
+      prevRequests24h: prevTotal,
+      growthPct: prevTotal > 0 ? Math.round(((total - prevTotal) / prevTotal) * 100) : null,
+      countriesReached: topCountries.filter((c) => c.requests > 0).length,
+      topCountries: topCountries.slice(0, 8),
+      peakHour: peak,
+      hourly,
+    };
+  } catch (err) {
+    console.error('CF analytics fetch failed', err);
+    return null;
+  }
+}
+
 /**
  * GET /api/admin/dashboard-stats — Admin-only. Rich analytics payload:
  * lifetime counters, derived engagement ratios, 14-day trend, geography,
  * category popularity, crowd question-vote leaderboards (the signal for tuning
- * prompts), feedback rating distribution, and registered-user / usage stats.
+ * prompts), feedback rating distribution, registered-user / usage stats, and
+ * (when configured) Cloudflare edge platform metrics.
  */
 async function handleAdminDashboardStats(request: Request, env: Env): Promise<Response> {
   const admin = await requireAdmin(request, env);
@@ -1861,6 +2017,33 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
     completionRate: sN > 0 ? Math.round((pCnt / sN) * 100) : null, // % of sessions that finished a round
   };
 
+  // ── Visitor funnel + device + dwell (anonymous beacon analytics) ──────────
+  const [fHome, fPlay, fHost, fQuestion, dwellSecs, dwellCnt] = await Promise.all([
+    env.APP_KV.get('stats:funnel:home'),
+    env.APP_KV.get('stats:funnel:play'),
+    env.APP_KV.get('stats:funnel:host'),
+    env.APP_KV.get('stats:funnel:question'),
+    env.APP_KV.get('stats:dwell_seconds_total'),
+    env.APP_KV.get('stats:dwell_count'),
+  ]);
+  let deviceOs: { name: string; count: number }[] = [];
+  let deviceForm: { name: string; count: number }[] = [];
+  try { deviceOs = (await kvPrefixCounts(env, 'stats:device:os:')).map((e) => ({ name: e.key, count: e.count })); } catch { /* non-critical */ }
+  try { deviceForm = (await kvPrefixCounts(env, 'stats:device:form:')).map((e) => ({ name: e.key, count: e.count })); } catch { /* non-critical */ }
+  const dCnt = int(dwellCnt);
+  const funnel = {
+    home: int(fHome),
+    play: int(fPlay),
+    host: int(fHost),
+    question: int(fQuestion),
+    avgDwellSeconds: dCnt > 0 ? Math.round(int(dwellSecs) / dCnt) : null,
+    dwellSamples: dCnt,
+  };
+  const device = { os: deviceOs, form: deviceForm };
+
+  // ── Cloudflare edge platform metrics (best-effort; null when unconfigured) ──
+  const cloudflare = await fetchCloudflareAnalytics(env).catch(() => null);
+
   return Response.json({
     generatedAt: new Date().toISOString(),
     totals: {
@@ -1878,6 +2061,9 @@ async function handleAdminDashboardStats(request: Request, env: Env): Promise<Re
     questionVotes,
     feedback,
     users,
+    funnel,
+    device,
+    cloudflare,
   });
 }
 

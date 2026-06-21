@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authedFetch } from '../../lib/firebase';
+import { track } from '../../lib/track';
 
 /**
  * Shared logic for creating a live session and navigating to the host view.
@@ -16,6 +17,7 @@ export function useCreateSession() {
   const createSession = useCallback(async () => {
     setCreating(true);
     setError('');
+    track('host'); // "start a host session" funnel step
 
     try {
       const res = await authedFetch('/api/session/create');

@@ -144,7 +144,7 @@ export default function Landing({ onSignIn }: LandingProps) {
             <motion.div variants={fadeUp} className="flex flex-wrap items-center gap-x-6 gap-y-2 mt-6 pt-6 border-t border-brand/5">
               <div className="flex items-center gap-1.5">
                 <MessageSquare size={12} className="opacity-40" />
-                <span className="text-[10px] caps-tracking opacity-40">1,000+ questions</span>
+                <span className="text-[10px] caps-tracking opacity-40">600+ questions</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <Users size={12} className="opacity-40" />
